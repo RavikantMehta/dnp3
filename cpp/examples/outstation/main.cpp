@@ -112,20 +112,20 @@ int main(int argc, char* argv[])
 
 	while (true)
 	{
-    UpdateBuilder builder;
+		std::cout << "Enter one or more measurement changes then press <enter>" << std::endl;
+		std::cout << "c = counter, b = binary, d = doublebit, a = analog, 'quit' = exit" << std::endl;
+		std::cin >> input;
 
-    // simulate analog input (like temperature)
-    builder.Update(Analog(state.value, Flags(0x01)), 0); // index 0
-    state.value += 0.1; // increment temp for simulation
-
-    // toggle binary input with timestamp
-    builder.Update(Binary(state.binary, Flags(0x01), UTCTimeSource::Instance().Now()), 1); // index 1
-    state.binary = !state.binary;
-
-    outstation->Apply(builder.Build());
-
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+		if (input == "quit") return 0; // DNP3Manager destructor cleanups up everything automatically
+		else
+		{
+			// update measurement values based on input string
+			UpdateBuilder builder;
+			AddUpdates(builder, state, input);
+			outstation->Apply(builder.Build());
+		}
 	}
+
 
 	return 0;
 }
