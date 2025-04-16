@@ -111,21 +111,21 @@ int main(int argc, char* argv[])
 	State state;
 
 	while (true)
-   	 {
-        UpdateBuilder builder;
-    
-        // simulate analog input (like temperature)
-        builder.Update(Analog(state.value, Flags(0x01)), 0); // index 0
-        state.value += 0.1; // increment temp for simulation
-    
-        // optionally add other types (e.g., binary toggle)
-        builder.Update(Binary(state.binary, Flags(0x01), app->Now()), 1); // index 1
-        state.binary = !state.binary;
-    
-        outstation->Apply(builder.Build());
-    
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-   	 }
+	{
+    UpdateBuilder builder;
+
+    // simulate analog input (like temperature)
+    builder.Update(Analog(state.value, Flags(0x01)), 0); // index 0
+    state.value += 0.1; // increment temp for simulation
+
+    // toggle binary input with timestamp
+    builder.Update(Binary(state.binary, Flags(0x01), UTCTimeSource::Instance().Now()), 1); // index 1
+    state.binary = !state.binary;
+
+    outstation->Apply(builder.Build());
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+	}
 
 	return 0;
 }
