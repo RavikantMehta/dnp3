@@ -140,22 +140,23 @@ int main(int argc, char* argv[])
 	// variables used in example loop
 	string input;
 	State state;
-
-	while (true)
-	{
-		std::cout << "Enter one or more measurement changes then press <enter>" << std::endl;
-		std::cout << "c = counter, b = binary, d = doublebit, a = analog, 'quit' = exit" << std::endl;
-		std::cin >> input;
-
-		if (input == "quit") return 0;
-		else
-		{
-			UpdateBuilder builder;
-			AddUpdates(builder, state, input);
-			outstation->Apply(builder.Build());
-		}
-	}
-
+	  while (true)
+   	 {
+        UpdateBuilder builder;
+    
+        // simulate analog input (like temperature)
+        builder.Update(Analog(state.value, Flags(0x01)), 0); // index 0
+        state.value += 0.1; // increment temp for simulation
+    
+        // optionally add other types (e.g., binary toggle)
+        builder.Update(Binary(state.binary, Flags(0x01), app->Now()), 1); // index 1
+        state.binary = !state.binary;
+    
+        outstation->Apply(builder.Build());
+    
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+   	 }
+    
 	return 0;
 }
 
