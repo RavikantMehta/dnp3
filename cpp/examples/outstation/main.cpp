@@ -28,7 +28,6 @@ shared_ptr<IOutstation> outstation_global;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Configure analog points
     config.analog[0].clazz = PointClass::Class2;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
@@ -54,9 +53,10 @@ void start_tcp_sensor_listener()
     try
     {
         boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20000));
+        // ✅ Listen on different port to avoid conflict
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
 
-        cout << "[INFO] Listening for sensor data on port 20000..." << endl;
+        cout << "[INFO] Listening for sensor data on port 20001..." << endl;
 
         while (true)
         {
@@ -95,6 +95,7 @@ int main(int argc, char* argv[])
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
     DNP3Manager manager(1, ConsoleLogger::Create());
 
+    // ✅ DNP3 listening on port 20000
     auto channel = manager.AddTCPServer(
         "server",
         FILTERS,
@@ -122,12 +123,14 @@ int main(int argc, char* argv[])
 
     outstation_global->Enable();
 
-    cout << "[INFO] DNP3 Outstation started." << endl;
+    cout << "[INFO] DNP3 Outstation started. Listening on 20000" << endl;
 
+    // Start TCP sensor server (on 20001)
     thread tcp_thread(start_tcp_sensor_listener);
     tcp_thread.join();
 
     return 0;
 }
+
 
 
