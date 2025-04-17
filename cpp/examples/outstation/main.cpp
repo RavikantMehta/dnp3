@@ -14,6 +14,10 @@
 #include <string>
 #include <thread>
 #include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 using namespace std;
 using namespace opendnp3;
@@ -27,123 +31,136 @@ void ConfigureDatabase(DatabaseConfig& config)
     config.analog[0].clazz = PointClass::Class2;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
+    config.analog[1].clazz = PointClass::Class2;
+    config.analog[1].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[1].evariation = EventAnalogVariation::Group32Var7;
+    config.analog[2].clazz = PointClass::Class2;
+    config.analog[2].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[2].evariation = EventAnalogVariation::Group32Var7;
 }
 
 struct State
 {
-    uint32_t count = 0;
-    double value = 0;
-    bool binary = false;
-    DoubleBit dbit = DoubleBit::DETERMINED_OFF;
+    double temperature = 0;
+    double pressure = 0;
+    double humidity = 0;
 };
 
-void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
+void parse_and_update_sensor_data(const std::string& data, State& state, Outstation& outstation)
 {
-    // Print the state before updates
-    std::cout << "Before Updates: " << std::endl;
-    std::cout << "Counter: " << state.count << ", Analog: " << state.value 
-              << ", Binary: " << (state.binary ? "True" : "False") 
-              << ", DoubleBit: " << (state.dbit == DoubleBit::DETERMINED_ON ? "ON" : "OFF") << std::endl;
+    std::istringstream stream(data);
+    std::string token;
 
-    for (const char& c : arguments)
-    {
-        switch (c)
-        {
-        case('c'):
-            {
-                builder.Update(Counter(state.count), 0);
-                ++state.count;
-                break;
-            }
-        case('a'):
-            {
-                builder.Update(Analog(state.value), 0);
-                state.value += 1;
-                break;
-            }
-        case('b'):
-            {
-                builder.Update(Binary(state.binary), 0);
-                state.binary = !state.binary;
-                break;
-            }
-        case('d'):
-            {
-                builder.Update(DoubleBitBinary(state.dbit), 0);
-                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
-                break;
-            }
-        default:
-            break;
-        }
+    // Parse temperature, pressure, and humidity
+    if (std::getline(stream, token, ','))
+        state.temperature = std::stod(token);
+    if (std::getline(stream, token, ','))
+        state.pressure = std::stod(token);
+    if (std::getline(stream, token, ','))
+        state.humidity = std::stod(token);
+
+    // Update DNP3 analog points with new sensor data
+    UpdateBuilder builder;
+
+    builder.Update(Analog(state.temperature), 0);  // Temperature to Analog 0
+    builder.Update(Analog(state.pressure), 1);     // Pressure to Analog 1
+    builder.Update(Analog(state.humidity), 2);     // Humidity to Analog 2
+
+    // Apply updates to outstation
+    outstation.Apply(builder.Build());
+
+    // Print the updated values for debugging
+    std::cout << "[INFO] Updated sensor data: Temperature = " << state.temperature
+              << ", Pressure = " << state.pressure << ", Humidity = " << state.humidity << std::endl;
+}
+
+void listen_for_data(Outstation& outstation, State& state)
+{
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        std::cerr << "[ERROR] Unable to create socket." << std::endl;
+        return;
     }
 
-    // Print the state after updates
-    std::cout << "After Updates: " << std::endl;
-    std::cout << "Counter: " << state.count << ", Analog: " << state.value 
-              << ", Binary: " << (state.binary ? "True" : "False") 
-              << ", DoubleBit: " << (state.dbit == DoubleBit::DETERMINED_ON ? "ON" : "OFF") << std::endl;
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(20000);  // Listening on port 20000
+
+    if (bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        std::cerr << "[ERROR] Unable to bind socket." << std::endl;
+        close(sockfd);
+        return;
+    }
+
+    if (listen(sockfd, 5) < 0) {
+        std::cerr << "[ERROR] Unable to listen on socket." << std::endl;
+        close(sockfd);
+        return;
+    }
+
+    std::cout << "[INFO] Listening for incoming data on port 20000..." << std::endl;
+
+    while (true) {
+        int client_sockfd = accept(sockfd, nullptr, nullptr);
+        if (client_sockfd < 0) {
+            std::cerr << "[ERROR] Unable to accept client connection." << std::endl;
+            continue;
+        }
+
+        char buffer[1024];
+        ssize_t bytes_received = recv(client_sockfd, buffer, sizeof(buffer), 0);
+        if (bytes_received < 0) {
+            std::cerr << "[ERROR] Failed to receive data." << std::endl;
+            close(client_sockfd);
+            continue;
+        }
+
+        buffer[bytes_received] = '\0';
+        std::string received_data(buffer);
+        std::cout << "[INFO] Received data: " << received_data << std::endl;
+
+        // Parse and update sensor data
+        parse_and_update_sensor_data(received_data, state, outstation);
+
+        close(client_sockfd);
+    }
+
+    close(sockfd);
 }
 
 int main(int argc, char* argv[])
 {
-    // Specify what log levels to use. NORMAL is warning and above
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
 
-    // This is the main point of interaction with the stack
     DNP3Manager manager(1, ConsoleLogger::Create());
 
-    // Create a TCP server (listener)
     auto channel = manager.AddTCPServer("server", FILTERS, ChannelRetry::Default(), "0.0.0.0", 20000, PrintingChannelListener::Create());
 
-    // The main object for an outstation
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
-
-    // Specify the maximum size of the event buffers
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
-
-    // Enable unsolicited reporting
     config.outstation.params.allowUnsolicited = true;
 
-    // Link layer settings
     config.link.LocalAddr = 10;
     config.link.RemoteAddr = 1;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
 
-    // Create a new outstation with the configuration
     auto outstation = channel->AddOutstation("outstation", SuccessCommandHandler::Create(), DefaultOutstationApplication::Create(), config);
-
-    // Enable the outstation and start communication
     outstation->Enable();
 
-    // Variables used in the example loop
-    string input;
     State state;
 
-    while (true)
-    {
-        std::cout << "Enter one or more measurement changes then press <enter>" << std::endl;
-        std::cout << "c = counter, b = binary, d = doublebit, a = analog, 'quit' = exit" << std::endl;
-        std::cin >> input;
+    // Listen for incoming sensor data in a separate thread
+    std::thread listener_thread(listen_for_data, std::ref(*outstation), std::ref(state));
+    listener_thread.detach();
 
-        if (input == "quit") return 0;
-
-        // Update measurement values based on input string
-        UpdateBuilder builder;
-        AddUpdates(builder, state, input);
-
-        // Print current state to confirm changes
-        std::cout << "Current State: " << std::endl;
-        std::cout << "Counter: " << state.count << ", Analog: " << state.value 
-                  << ", Binary: " << (state.binary ? "True" : "False") 
-                  << ", DoubleBit: " << (state.dbit == DoubleBit::DETERMINED_ON ? "ON" : "OFF") << std::endl;
-
-        // Apply the update to outstation
-        outstation->Apply(builder.Build());
+    // Keep the program running
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     return 0;
 }
-
