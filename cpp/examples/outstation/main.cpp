@@ -3,8 +3,8 @@
 #include <asiodnp3/PrintingChannelListener.h>
 #include <asiodnp3/ConsoleLogger.h>
 #include <asiodnp3/UpdateBuilder.h>
-
 #include <asiopal/UTCTimeSource.h>
+
 #include <opendnp3/outstation/SimpleCommandHandler.h>
 #include <opendnp3/outstation/IUpdateHandler.h>
 #include <opendnp3/LogLevels.h>
@@ -15,69 +15,78 @@
 #include <thread>
 #include <iostream>
 #include <sstream>
+#include <vector>
 
 using namespace std;
 using namespace opendnp3;
+using namespace openpal;
 using namespace asiopal;
 using namespace asiodnp3;
 using boost::asio::ip::tcp;
 
-std::shared_ptr<IOutstation> global_outstation;
+shared_ptr<IOutstation> outstation_global;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
+    // Configure analog points
     config.analog[0].clazz = PointClass::Class2;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
-    config.analog[1] = config.analog[0];
-    config.analog[2] = config.analog[0];
+
+    config.analog[1] = config.analog[0]; // pressure
+    config.analog[2] = config.analog[0]; // humidity
 }
 
-void start_tcp_receiver()
+vector<string> split(const string& s, char delimiter)
+{
+    vector<string> tokens;
+    string token;
+    istringstream tokenStream(s);
+    while (getline(tokenStream, token, delimiter))
+    {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+void start_tcp_sensor_listener()
 {
     try
     {
         boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));  // Avoid 20000 conflict
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20000));
 
-        std::cout << "[TCP SERVER] Listening on port 20001..." << std::endl;
+        cout << "[INFO] Listening for sensor data on port 20000..." << endl;
 
         while (true)
         {
             tcp::socket socket(io_context);
             acceptor.accept(socket);
-            std::cout << "[TCP SERVER] Client connected!" << std::endl;
 
             char data[1024] = {0};
             size_t length = socket.read_some(boost::asio::buffer(data));
-            std::string received(data, length);
-            std::cout << "[TCP SERVER] Received: " << received << std::endl;
+            string received(data, length);
 
-            std::istringstream ss(received);
-            std::string token;
-            std::vector<double> values;
-            while (std::getline(ss, token, ','))
-            {
-                values.push_back(std::stod(token));
-            }
+            cout << "[RECEIVED] Sensor data: " << received << endl;
 
-            if (global_outstation && values.size() >= 3)
+            vector<string> values = split(received, ',');
+            if (values.size() >= 3 && outstation_global)
             {
                 UpdateBuilder builder;
-                builder.Update(Analog(values[0]), 0);  // Temperature
-                builder.Update(Analog(values[1]), 1);  // Pressure
-                builder.Update(Analog(values[2]), 2);  // Humidity
+                builder.Update(Analog(stod(values[0])), 0); // temp
+                builder.Update(Analog(stod(values[1])), 1); // pressure
+                builder.Update(Analog(stod(values[2])), 2); // humidity
+                outstation_global->Apply(builder.Build());
 
-                global_outstation->Apply(builder.Build());
-                std::cout << "[DNP3] Updated analog points!" << std::endl;
+                cout << "[UPDATED] Analog values updated in DNP3 outstation." << endl;
             }
 
             socket.close();
         }
     }
-    catch (std::exception& e)
+    catch (exception& e)
     {
-        std::cerr << "[ERROR] TCP Server exception: " << e.what() << std::endl;
+        cerr << "[ERROR] TCP Server: " << e.what() << endl;
     }
 }
 
@@ -86,30 +95,39 @@ int main(int argc, char* argv[])
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
     DNP3Manager manager(1, ConsoleLogger::Create());
 
-    // FIX: Replaced ChannelRetry::Default() with just 'nullptr' for channel listener
-    auto channel = manager.AddTCPServer("server", FILTERS, nullptr, "0.0.0.0", 20000, PrintingChannelListener::Create());
+    auto channel = manager.AddTCPServer(
+        "server",
+        FILTERS,
+        ChannelRetry::Default(),
+        "0.0.0.0",
+        20000,
+        PrintingChannelListener::Create()
+    );
 
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
     config.link.LocalAddr = 10;
     config.link.RemoteAddr = 1;
+    config.link.KeepAliveTimeout = TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
 
-    global_outstation = channel->AddOutstation(
+    outstation_global = channel->AddOutstation(
         "outstation",
         SuccessCommandHandler::Create(),
         DefaultOutstationApplication::Create(),
         config
     );
 
-    global_outstation->Enable();
+    outstation_global->Enable();
 
-    // Start TCP listener in a new thread
-    std::thread tcp_thread(start_tcp_receiver);
+    cout << "[INFO] DNP3 Outstation started." << endl;
+
+    thread tcp_thread(start_tcp_sensor_listener);
     tcp_thread.join();
 
     return 0;
 }
+
 
