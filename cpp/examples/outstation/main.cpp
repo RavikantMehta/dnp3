@@ -1,166 +1,122 @@
 #include <asiodnp3/DNP3Manager.h>
-#include <asiodnp3/PrintingSOEHandler.h>
 #include <asiodnp3/PrintingChannelListener.h>
 #include <asiodnp3/ConsoleLogger.h>
 #include <asiodnp3/UpdateBuilder.h>
-
 #include <asiopal/UTCTimeSource.h>
 #include <opendnp3/outstation/SimpleCommandHandler.h>
-
-#include <opendnp3/outstation/IUpdateHandler.h>
-
 #include <opendnp3/LogLevels.h>
 
+#include <iostream>
 #include <string>
 #include <thread>
-#include <iostream>
 #include <sstream>
-#include <iomanip>
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include <vector>
+#include <cstring>
+#include <netinet/in.h>
+#include <unistd.h>
 
 using namespace std;
 using namespace opendnp3;
-using namespace openpal;
-using namespace asiopal;
 using namespace asiodnp3;
+
+// === DATABASE CONFIGURATION ===
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // example of configuring analog index 0 for Class2 with floating point variations by default
-    config.analog[0].clazz = PointClass::Class2;
-    config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[0].evariation = EventAnalogVariation::Group32Var7;
-    config.analog[1].clazz = PointClass::Class2;
-    config.analog[1].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[1].evariation = EventAnalogVariation::Group32Var7;
-    config.analog[2].clazz = PointClass::Class2;
-    config.analog[2].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[2].evariation = EventAnalogVariation::Group32Var7;
+    config.analog[0].clazz = PointClass::Class1;
+    config.analog[1].clazz = PointClass::Class1;
+    config.analog[2].clazz = PointClass::Class1;
 }
 
-struct State
+// === SENSOR DATA PARSER ===
+
+void parse_and_update_sensor_data(const std::string& data, std::shared_ptr<IOutstation> outstation)
 {
-    double temperature = 0;
-    double pressure = 0;
-    double humidity = 0;
-};
+    std::stringstream ss(data);
+    std::string item;
+    std::vector<double> values;
 
-void parse_and_update_sensor_data(const std::string& data, State& state, Outstation& outstation)
-{
-    std::istringstream stream(data);
-    std::string token;
-
-    // Parse temperature, pressure, and humidity
-    if (std::getline(stream, token, ','))
-        state.temperature = std::stod(token);
-    if (std::getline(stream, token, ','))
-        state.pressure = std::stod(token);
-    if (std::getline(stream, token, ','))
-        state.humidity = std::stod(token);
-
-    // Update DNP3 analog points with new sensor data
-    UpdateBuilder builder;
-
-    builder.Update(Analog(state.temperature), 0);  // Temperature to Analog 0
-    builder.Update(Analog(state.pressure), 1);     // Pressure to Analog 1
-    builder.Update(Analog(state.humidity), 2);     // Humidity to Analog 2
-
-    // Apply updates to outstation
-    outstation.Apply(builder.Build());
-
-    // Print the updated values for debugging
-    std::cout << "[INFO] Updated sensor data: Temperature = " << state.temperature
-              << ", Pressure = " << state.pressure << ", Humidity = " << state.humidity << std::endl;
-}
-
-void listen_for_data(Outstation& outstation, State& state)
-{
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        std::cerr << "[ERROR] Unable to create socket." << std::endl;
-        return;
-    }
-
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(20000);  // Listening on port 20000
-
-    if (bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        std::cerr << "[ERROR] Unable to bind socket." << std::endl;
-        close(sockfd);
-        return;
-    }
-
-    if (listen(sockfd, 5) < 0) {
-        std::cerr << "[ERROR] Unable to listen on socket." << std::endl;
-        close(sockfd);
-        return;
-    }
-
-    std::cout << "[INFO] Listening for incoming data on port 20000..." << std::endl;
-
-    while (true) {
-        int client_sockfd = accept(sockfd, nullptr, nullptr);
-        if (client_sockfd < 0) {
-            std::cerr << "[ERROR] Unable to accept client connection." << std::endl;
-            continue;
+    while (std::getline(ss, item, ','))
+    {
+        try {
+            values.push_back(std::stod(item));
+        } catch (...) {
+            std::cerr << "[ERROR] Failed to convert sensor value: " << item << std::endl;
+            return;
         }
-
-        char buffer[1024];
-        ssize_t bytes_received = recv(client_sockfd, buffer, sizeof(buffer), 0);
-        if (bytes_received < 0) {
-            std::cerr << "[ERROR] Failed to receive data." << std::endl;
-            close(client_sockfd);
-            continue;
-        }
-
-        buffer[bytes_received] = '\0';
-        std::string received_data(buffer);
-        std::cout << "[INFO] Received data: " << received_data << std::endl;
-
-        // Parse and update sensor data
-        parse_and_update_sensor_data(received_data, state, outstation);
-
-        close(client_sockfd);
     }
 
-    close(sockfd);
+    if (values.size() >= 3)
+    {
+        UpdateBuilder builder;
+        builder.Update(Analog(values[0]), 0); // Temperature
+        builder.Update(Analog(values[1]), 1); // Pressure
+        builder.Update(Analog(values[2]), 2); // Humidity
+
+        outstation->Apply(builder.Build());
+
+        std::cout << "[INFO] Updated DNP3 Analog Points - Temp: " << values[0]
+                  << ", Pressure: " << values[1] << ", Humidity: " << values[2] << std::endl;
+    }
+    else
+    {
+        std::cerr << "[ERROR] Not enough values received. Expected 3, got " << values.size() << std::endl;
+    }
 }
+
+// === SOCKET LISTENER THREAD ===
+
+void listen_for_data(std::shared_ptr<IOutstation> outstation)
+{
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    char buffer[1024] = {0};
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(20000);
+
+    bind(server_fd, (struct sockaddr*)&address, sizeof(address));
+    listen(server_fd, 3);
+
+    std::cout << "[INFO] Listening for sensor data on port 20000..." << std::endl;
+
+    while (true)
+    {
+        new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        memset(buffer, 0, sizeof(buffer));
+        read(new_socket, buffer, 1024);
+        std::string data(buffer);
+        std::cout << "[RECV] Sensor Data: " << data << std::endl;
+        parse_and_update_sensor_data(data, outstation);
+        close(new_socket);
+    }
+}
+
+// === MAIN ===
 
 int main(int argc, char* argv[])
 {
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
-
     DNP3Manager manager(1, ConsoleLogger::Create());
 
-    auto channel = manager.AddTCPServer("server", FILTERS, ChannelRetry::Default(), "0.0.0.0", 20000, PrintingChannelListener::Create());
+    auto channel = manager.AddTCPServer("server", FILTERS, ChannelRetry::Default(),
+                                        "0.0.0.0", 20001, PrintingChannelListener::Create());
 
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
-
     config.link.LocalAddr = 10;
     config.link.RemoteAddr = 1;
-    config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
 
-    auto outstation = channel->AddOutstation("outstation", SuccessCommandHandler::Create(), DefaultOutstationApplication::Create(), config);
-    outstation->Enable();
+    auto outstation = channel->AddOutstation("outstation",
+                                             SuccessCommandHandler::Create(),
+                                             Default
 
-    State state;
-
-    // Listen for incoming sensor data in a separate thread
-    std::thread listener_thread(listen_for_data, std::ref(*outstation), std::ref(state));
-    listener_thread.detach();
-
-    // Keep the program running
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-
-    return 0;
-}
