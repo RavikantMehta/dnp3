@@ -28,7 +28,8 @@ shared_ptr<IOutstation> outstation_global;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    config.analog[0].clazz = PointClass::Class2;
+    // ✅ Class 0 for static polling, plus optional Class 1/2 for events
+    config.analog[0].clazz = PointClass::Class0 | PointClass::Class1;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
 
@@ -53,7 +54,6 @@ void start_tcp_sensor_listener()
     try
     {
         boost::asio::io_context io_context;
-        // ✅ Listen on different port to avoid conflict
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
 
         cout << "[INFO] Listening for sensor data on port 20001..." << endl;
@@ -73,9 +73,10 @@ void start_tcp_sensor_listener()
             if (values.size() >= 3 && outstation_global)
             {
                 UpdateBuilder builder;
-                builder.Update(Analog(stod(values[0])), 0); // temp
-                builder.Update(Analog(stod(values[1])), 1); // pressure
-                builder.Update(Analog(stod(values[2])), 2); // humidity
+                // ✅ Use "online" flag (0x01) for each analog point
+                builder.Update(Analog(stod(values[0]), 0x01), 0); // temp
+                builder.Update(Analog(stod(values[1]), 0x01), 1); // pressure
+                builder.Update(Analog(stod(values[2]), 0x01), 2); // humidity
                 outstation_global->Apply(builder.Build());
 
                 cout << "[UPDATED] Analog values updated in DNP3 outstation." << endl;
@@ -92,10 +93,10 @@ void start_tcp_sensor_listener()
 
 int main(int argc, char* argv[])
 {
-    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
+    // ✅ Use all logs for debugging DNP3 communication
+    const uint32_t FILTERS = levels::ALL;
     DNP3Manager manager(1, ConsoleLogger::Create());
 
-    // ✅ DNP3 listening on port 20000
     auto channel = manager.AddTCPServer(
         "server",
         FILTERS,
@@ -107,9 +108,9 @@ int main(int argc, char* argv[])
 
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = true;
-    config.link.LocalAddr = 10;
-    config.link.RemoteAddr = 1;
+    config.outstation.params.allowUnsolicited = true; // Optional; ScadaBR polls instead
+    config.link.LocalAddr = 10;  // Matches Slave Address in ScadaBR
+    config.link.RemoteAddr = 1;  // Matches Source Address in ScadaBR
     config.link.KeepAliveTimeout = TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
@@ -123,14 +124,11 @@ int main(int argc, char* argv[])
 
     outstation_global->Enable();
 
-    cout << "[INFO] DNP3 Outstation started. Listening on 20000" << endl;
+    cout << "[INFO] DNP3 Outstation started. Listening on port 20000." << endl;
 
-    // Start TCP sensor server (on 20001)
+    // ✅ Start TCP listener to receive sensor values from Python script
     thread tcp_thread(start_tcp_sensor_listener);
     tcp_thread.join();
 
     return 0;
 }
-
-
-
