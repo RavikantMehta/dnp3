@@ -1,8 +1,8 @@
 #include <iostream>
 #include <thread>
+#include <mutex>
 #include <boost/asio.hpp>
 #include <openpal/logging/LogLevels.h>
-#include <opendnp3/outstation/DatabaseConfig.h>
 #include <opendnp3/outstation/UpdateBuilder.h>
 #include <opendnp3/outstation/OutstationStackConfig.h>
 #include <opendnp3/outstation/IOutstation.h>
@@ -14,29 +14,32 @@
 #include <asiodnp3/UpdateHandlers.h>
 
 using boost::asio::ip::tcp;
+using namespace std;
 
-// Constants
-const int PORT = 20000;  // Port for TCP server
+const int SENSOR_PORT = 20001;   // Python sends data here
+const int SCADA_PORT = 20000;    // SCADA polls this port
 
-// Helper function to update analogs
+std::mutex update_mutex;
+
+// Update analogs with EventMode::Detect to be picked up by SCADA
 void UpdateAnalog(asiodnp3::IOutstation* outstation, double value, uint16_t index)
 {
-    opendnp3::Analog analog(value, opendnp3::Flags(0x01)); // ONLINE flag
-    outstation->Update(analog, index, opendnp3::EventMode::Force);
-    std::cout << "[OUTSTATION] Updated Analog[" << index << "] = " << value << std::endl;
+    std::lock_guard<std::mutex> lock(update_mutex);
+    opendnp3::Analog analog(value, opendnp3::Flags(0x01)); // ONLINE
+    outstation->Update(analog, index, opendnp3::EventMode::Detect);
+    std::cout << "[OUTSTATION] Analog[" << index << "] = " << value << std::endl;
 }
 
-// TCP server to receive sensor data
-void StartTCPServer(asiodnp3::IOutstation* outstation)
+// TCP listener that accepts data from Python client
+void StartSensorTCP(asiodnp3::IOutstation* outstation)
 {
-    boost::asio::io_context io_context;
-    tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), PORT));
-
-    std::cout << "[TCP] Listening on port " << PORT << "...\n";
+    boost::asio::io_context io;
+    tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), SENSOR_PORT));
+    std::cout << "[TCP] Listening for sensor data on port " << SENSOR_PORT << "...\n";
 
     while (true)
     {
-        tcp::socket socket(io_context);
+        tcp::socket socket(io);
         acceptor.accept(socket);
 
         boost::asio::streambuf buffer;
@@ -47,55 +50,50 @@ void StartTCPServer(asiodnp3::IOutstation* outstation)
         std::getline(input, line);
 
         std::stringstream ss(line);
-        double temp, pressure, vibration;
+        double temp, pressure, humidity;
         char comma;
 
-        if (ss >> temp >> comma >> pressure >> comma >> vibration)
+        if (ss >> temp >> comma >> pressure >> comma >> humidity)
         {
-            std::cout << "[RECEIVED] Sensor data: " << temp << ", " << pressure << ", " << vibration << "\n";
+            std::cout << "[RECEIVED] " << temp << ", " << pressure << ", " << humidity << std::endl;
             UpdateAnalog(outstation, temp, 0);
             UpdateAnalog(outstation, pressure, 1);
-            UpdateAnalog(outstation, vibration, 2);
+            UpdateAnalog(outstation, humidity, 2);
         }
         else
         {
-            std::cerr << "[ERROR] Failed to parse line: " << line << "\n";
+            std::cerr << "[ERROR] Could not parse: " << line << std::endl;
         }
     }
 }
 
 int main()
 {
-    // Logger levels
-    const auto levels = openpal::LogLevels::NORMAL | openpal::LogLevels::ALL_APP_COMMS;
+    const auto logLevels = openpal::LogLevels::NORMAL | openpal::LogLevels::ALL_APP_COMMS;
 
-    // DNP3 Manager with 1 thread
     asiodnp3::DNP3Manager manager(1);
     auto log = manager.GetLogger();
-    log.SetLevels(levels);
+    log.SetLevels(logLevels);
 
-    // Create channel
+    // Create channel for ScadaBR polling
     auto channel = manager.AddTCPServer(
-        "server",
-        levels,
+        "dnp3_server",
+        logLevels,
         opendnp3::ServerAcceptMode::CloseNew,
-        { opendnp3::IPEndpoint("0.0.0.0", 20001) },
+        { opendnp3::IPEndpoint("0.0.0.0", SCADA_PORT) },
         std::chrono::seconds(5)
     );
 
-    // Database configuration with 10 analogs
+    // Create DB with 10 analog points
     opendnp3::DatabaseConfig dbConfig(10);
-
-    // Assign Class 1 so SCADA can poll these points
     dbConfig.analog[0].clazz = opendnp3::PointClass::Class1;
     dbConfig.analog[1].clazz = opendnp3::PointClass::Class1;
     dbConfig.analog[2].clazz = opendnp3::PointClass::Class1;
 
     asiodnp3::OutstationStackConfig stackConfig(dbConfig);
-    stackConfig.outstation.params.allowUnsolicited = true;
+    stackConfig.outstation.params.allowUnsolicited = false; // no unsolicited messages
     stackConfig.outstation.params.eventBufferConfig = opendnp3::EventBufferConfig(10);
 
-    // Create outstation
     auto outstation = channel->AddOutstation(
         "outstation",
         asiodnp3::UpdateHandlers::Create(),
@@ -104,13 +102,14 @@ int main()
     );
 
     outstation->Enable();
-    std::cout << "[INFO] DNP3 Outstation Enabled.\n";
+    std::cout << "[INFO] DNP3 Outstation running on port " << SCADA_PORT << "\n";
 
-    // Start TCP listener in another thread
-    std::thread serverThread(StartTCPServer, outstation.get());
-    serverThread.join();
+    // Start thread to handle Python data
+    std::thread sensorThread(StartSensorTCP, outstation.get());
+    sensorThread.join();
 
     return 0;
 }
+
 
 
