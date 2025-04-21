@@ -25,51 +25,25 @@ using namespace asiopal;
 using namespace opendnp3;
 using namespace asiodnp3;
 
-struct State {
-    uint32_t count = 0;
-    double value = 0;
-    bool binary = false;
-    DoubleBit dbit = DoubleBit::DETERMINED_OFF;
-};
-
 void ConfigureDatabase(DatabaseConfig& config)
 {
+    // Temperature - Analog[0]
     config.analog[0].clazz = PointClass::Class1;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
 
+    // Pressure - Analog[1]
     config.analog[1].clazz = PointClass::Class1;
+    config.analog[1].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[1].evariation = EventAnalogVariation::Group32Var7;
+
+    // Humidity - Analog[2]
     config.analog[2].clazz = PointClass::Class1;
+    config.analog[2].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[2].evariation = EventAnalogVariation::Group32Var7;
 
+    // Binary input - Binary[0]
     config.binary[0].clazz = PointClass::Class1;
-}
-
-void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
-{
-    for (const char& c : arguments)
-    {
-        switch (c)
-        {
-            case 'c':
-                builder.Update(Counter(state.count), 0);
-                ++state.count;
-                break;
-            case 'a':
-                builder.Update(Analog(state.value), 0);
-                state.value += 1;
-                break;
-            case 'b':
-                builder.Update(Binary(state.binary), 0);
-                state.binary = !state.binary;
-                break;
-            case 'd':
-                builder.Update(DoubleBitBinary(state.dbit), 0);
-                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
-                break;
-            default:
-                break;
-        }
-    }
 }
 
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
@@ -130,26 +104,6 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     }
 }
 
-void HandleUserInput(std::shared_ptr<IOutstation> outstation)
-{
-    string input;
-    State state;
-
-    while (true)
-    {
-        std::cout << "Enter one or more measurement changes then press <enter>" << std::endl;
-        std::cout << "c = counter, b = binary, d = doublebit, a = analog, 'quit' = exit" << std::endl;
-        std::cin >> input;
-
-        if (input == "quit")
-            exit(0);
-
-        UpdateBuilder builder;
-        AddUpdates(builder, state, input);
-        outstation->Apply(builder.Build());
-    }
-}
-
 int main(int argc, char* argv[])
 {
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
@@ -183,10 +137,7 @@ int main(int argc, char* argv[])
     outstation->Enable();
 
     std::thread sensorThread(ReceiveSensorData, outstation);
-    std::thread inputThread(HandleUserInput, outstation);
-
     sensorThread.join();
-    inputThread.join();
 
     return 0;
 }
