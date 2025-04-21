@@ -27,22 +27,18 @@ using namespace asiodnp3;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Temperature - Analog[0]
     config.analog[0].clazz = PointClass::Class1;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
 
-    // Pressure - Analog[1]
     config.analog[1].clazz = PointClass::Class1;
     config.analog[1].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[1].evariation = EventAnalogVariation::Group32Var7;
 
-    // Humidity - Analog[2]
     config.analog[2].clazz = PointClass::Class1;
     config.analog[2].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[2].evariation = EventAnalogVariation::Group32Var7;
 
-    // Binary input - Binary[0]
     config.binary[0].clazz = PointClass::Class1;
 }
 
@@ -79,11 +75,13 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
                 float humidity = std::stof(humidStr);
                 bool binaryValue = (binaryStr == "1");
 
+                auto now = DNPTime(UTCTimeSource::Instance().Now());
+
                 UpdateBuilder builder;
-                builder.Update(Analog(temperature), 0);
-                builder.Update(Analog(pressure), 1);
-                builder.Update(Analog(humidity), 2);
-                builder.Update(Binary(binaryValue), 0);
+                builder.Update(Analog(temperature, AnalogQualitySpec::GetDefaultFlags(), now), 0, EventMode::Detect, PointClass::Class1);
+                builder.Update(Analog(pressure, AnalogQualitySpec::GetDefaultFlags(), now), 1, EventMode::Detect, PointClass::Class1);
+                builder.Update(Analog(humidity, AnalogQualitySpec::GetDefaultFlags(), now), 2, EventMode::Detect, PointClass::Class1);
+                builder.Update(Binary(binaryValue, BinaryQualitySpec::GetDefaultFlags(), now), 0, EventMode::Detect, PointClass::Class1);
                 outstation->Apply(builder.Build());
 
                 std::cout << "[INFO] Sent to outstation: T=" << temperature
@@ -141,3 +139,4 @@ int main(int argc, char* argv[])
 
     return 0;
 }
+
