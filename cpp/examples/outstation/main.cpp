@@ -35,9 +35,10 @@ struct State {
 void ConfigureDatabase(DatabaseConfig& config)
 {
     config.analog[0].clazz = PointClass::Class1;
-    config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[0].svariation = StaticAnalogVariation::Group32Var7;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
 
+    config.analog[0].clazz = PointClass::Class1;
     config.analog[1].clazz = PointClass::Class1;
     config.analog[2].clazz = PointClass::Class1;
 
