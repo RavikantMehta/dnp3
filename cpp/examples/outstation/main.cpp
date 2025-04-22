@@ -34,43 +34,23 @@ struct State {
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
+    // Temperature - analog index 0
     config.analog[0].clazz = PointClass::Class1;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
 
-    config.analog[0].clazz = PointClass::Class1;
+    // Pressure - analog index 1
     config.analog[1].clazz = PointClass::Class1;
+    config.analog[1].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[1].evariation = EventAnalogVariation::Group32Var7;
+
+    // Humidity - analog index 2
     config.analog[2].clazz = PointClass::Class1;
+    config.analog[2].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[2].evariation = EventAnalogVariation::Group32Var7;
 
+    // Binary input - index 0
     config.binary[0].clazz = PointClass::Class1;
-}
-
-void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
-{
-    for (const char& c : arguments)
-    {
-        switch (c)
-        {
-            case 'c':
-                builder.Update(Counter(state.count), 0);
-                ++state.count;
-                break;
-            case 'a':
-                builder.Update(Analog(state.value), 0);
-                state.value += 1;
-                break;
-            case 'b':
-                builder.Update(Binary(state.binary), 0);
-                state.binary = !state.binary;
-                break;
-            case 'd':
-                builder.Update(DoubleBitBinary(state.dbit), 0);
-                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
-                break;
-            default:
-                break;
-        }
-    }
 }
 
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
@@ -128,6 +108,34 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     catch (const std::exception& e)
     {
         std::cerr << "[ERROR] Exception in ReceiveSensorData: " << e.what() << std::endl;
+    }
+}
+
+void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
+{
+    for (const char& c : arguments)
+    {
+        switch (c)
+        {
+            case 'c':
+                builder.Update(Counter(state.count), 0);
+                ++state.count;
+                break;
+            case 'a':
+                builder.Update(Analog(state.value), 0);
+                state.value += 1;
+                break;
+            case 'b':
+                builder.Update(Binary(state.binary), 0);
+                state.binary = !state.binary;
+                break;
+            case 'd':
+                builder.Update(DoubleBitBinary(state.dbit), 0);
+                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
+                break;
+            default:
+                break;
+        }
     }
 }
 
