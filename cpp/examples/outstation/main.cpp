@@ -161,7 +161,7 @@ int main(int argc, char* argv[])
         FILTERS,
         ChannelRetry::Default(),
         "0.0.0.0",
-        20000,
+        20002,
         PrintingChannelListener::Create()
     );
 
@@ -169,7 +169,7 @@ int main(int argc, char* argv[])
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
     config.link.LocalAddr = 11;
-    config.link.RemoteAddr = 1;
+    config.link.RemoteAddr = 2;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
