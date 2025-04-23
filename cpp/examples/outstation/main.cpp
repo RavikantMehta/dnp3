@@ -34,31 +34,51 @@ struct State {
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Temperature - analog index 0
     config.analog[0].clazz = PointClass::Class1;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
-
-    // Pressure - analog index 1
+    
+    config.analog[0].clazz = PointClass::Class1;
     config.analog[1].clazz = PointClass::Class1;
-    config.analog[1].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[1].evariation = EventAnalogVariation::Group32Var7;
-
-    // Humidity - analog index 2
     config.analog[2].clazz = PointClass::Class1;
-    config.analog[2].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[2].evariation = EventAnalogVariation::Group32Var7;
 
-    // Binary input - index 0
     config.binary[0].clazz = PointClass::Class1;
+}
+
+void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
+{
+    for (const char& c : arguments)
+    {
+        switch (c)
+        {
+            case 'c':
+                builder.Update(Counter(state.count), 0);
+                ++state.count;
+                break;
+            case 'a':
+                builder.Update(Analog(state.value), 0);
+                state.value += 1;
+                break;
+            case 'b':
+                builder.Update(Binary(state.binary), 0);
+                state.binary = !state.binary;
+                break;
+            case 'd':
+                builder.Update(DoubleBitBinary(state.dbit), 0);
+                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
+                break;
+            default:
+                break;
+        }
+    }
 }
 
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
         boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
-        std::cout << "[INFO] Listening for sensor data on port 20001..." << std::endl;
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
+        std::cout << "[INFO] Listening for sensor data on port 15000..." << std::endl;
 
         while (true)
         {
@@ -111,34 +131,6 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     }
 }
 
-void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
-{
-    for (const char& c : arguments)
-    {
-        switch (c)
-        {
-            case 'c':
-                builder.Update(Counter(state.count), 0);
-                ++state.count;
-                break;
-            case 'a':
-                builder.Update(Analog(state.value), 0);
-                state.value += 1;
-                break;
-            case 'b':
-                builder.Update(Binary(state.binary), 0);
-                state.binary = !state.binary;
-                break;
-            case 'd':
-                builder.Update(DoubleBitBinary(state.dbit), 0);
-                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
-                break;
-            default:
-                break;
-        }
-    }
-}
-
 void HandleUserInput(std::shared_ptr<IOutstation> outstation)
 {
     string input;
@@ -176,7 +168,7 @@ int main(int argc, char* argv[])
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
-    config.link.LocalAddr = 10;
+    config.link.LocalAddr = 11;
     config.link.RemoteAddr = 1;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
@@ -199,3 +191,4 @@ int main(int argc, char* argv[])
 
     return 0;
 }
+
