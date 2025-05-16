@@ -77,7 +77,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
         boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
         std::cout << "[INFO] Listening for sensor data on port 20001...for RTU1" << std::endl;
 
         while (true)
