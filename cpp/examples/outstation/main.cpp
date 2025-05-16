@@ -78,7 +78,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     try {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
-        std::cout << "[INFO] Listening for sensor data on port 15000...for RTU2" << std::endl;
+        std::cout << "[INFO] Listening for sensor data on port 20001...for RTU1" << std::endl;
 
         while (true)
         {
@@ -168,8 +168,8 @@ int main(int argc, char* argv[])
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
-    config.link.LocalAddr = 11;
-    config.link.RemoteAddr = 2;
+    config.link.LocalAddr = 10;
+    config.link.RemoteAddr = 1;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
