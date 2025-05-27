@@ -1,163 +1,137 @@
+#include <opendnp3/outstation/IOutstation.h>
+#include <opendnp3/outstation/UpdateBuilder.h>
+#include <opendnp3/outstation/DatabaseConfig.h>
+#include <opendnp3/outstation/OutstationStackConfig.h>
+#include <opendnp3/outstation/DefaultOutstationApplication.h>
+#include <opendnp3/outstation/DefaultListenCallbacks.h>
+
+#include <opendnp3/logging/ConsoleLogger.h>
+#include <opendnp3/master/PrintingSOEHandler.h>
+#include <opendnp3/channel/DefaultChannelListener.h>
+#include <opendnp3/channel/TCPServer.h>
+
+#include <asiopal/ASIOExecutor.h>
+#include <asiopal/IO.h>
+#include <asiopal/TCPServer.h>
+
+#include <openpal/logging/LogLevels.h>
+#include <openpal/util/ToHex.h>
+
+#include <chrono>
+#include <thread>
 #include <iostream>
 #include <sstream>
-#include <thread>
 #include <string>
-#include <mutex>
+#include <memory>
 
 #include <boost/asio.hpp>
 
-#include <openpal/logging/LogLevels.h>
-#include <asiopal/UTCTimeSource.h>
-
-#include <opendnp3/LogLevels.h>
-#include <opendnp3/outstation/IUpdateHandler.h>
-#include <opendnp3/outstation/SimpleCommandHandler.h>
-
-#include <asiodnp3/DNP3Manager.h>
-#include <asiodnp3/ConsoleLogger.h>
-#include <asiodnp3/PrintingChannelListener.h>
-#include <asiodnp3/UpdateBuilder.h>
-
 using namespace std;
-using namespace boost::asio::ip;
+using namespace opendnp3;
 using namespace openpal;
 using namespace asiopal;
-using namespace opendnp3;
-using namespace asiodnp3;
+using namespace boost::asio;
 
-void ConfigureDatabase(DatabaseConfig& config)
+void start_sensor_listener(shared_ptr<IOutstation> outstation)
 {
-    for (int i = 0; i < 6; ++i) // 3 analogs per device × 2 devices = 6
-    {
-        config.analog[i].clazz = PointClass::Class1;
-        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
-        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
-    }
+    thread([outstation]() {
+        io_context io;
+        ip::tcp::acceptor acceptor(io, ip::tcp::endpoint(ip::address::from_string("127.0.0.1"), 15000));
 
-    for (int i = 0; i < 2; ++i) // 1 binary per device × 2 devices = 2
-    {
-        config.binary[i].clazz = PointClass::Class1;
-    }
+        function<void()> do_accept;
+        do_accept = [&]() {
+            acceptor.async_accept([&](boost::system::error_code ec, ip::tcp::socket socket) {
+                if (!ec) {
+                    thread([sock = move(socket), outstation]() mutable {
+                        try {
+                            while (true) {
+                                char buffer[1024];
+                                size_t len = sock.read_some(buffer::mutable_buffers_1(buffer, sizeof(buffer)));
+                                if (len > 0) {
+                                    string data(buffer, len);
+                                    istringstream iss(data);
+                                    int temp, pressure, humidity, binary, device_id;
+                                    iss >> temp >> pressure >> humidity >> binary >> device_id;
+
+                                    UpdateBuilder builder;
+                                    if (device_id == 101) {
+                                        builder.Update(Analog(temp, Flags(0x01)), 0);
+                                        builder.Update(Analog(pressure, Flags(0x01)), 1);
+                                        builder.Update(Analog(humidity, Flags(0x01)), 2);
+                                        builder.Update(Binary(binary != 0, Flags(0x01)), 0);
+                                    } else if (device_id == 102) {
+                                        builder.Update(Analog(temp, Flags(0x01)), 3);
+                                        builder.Update(Analog(pressure, Flags(0x01)), 4);
+                                        builder.Update(Analog(humidity, Flags(0x01)), 5);
+                                        builder.Update(Binary(binary != 0, Flags(0x01)), 1);
+                                    } else {
+                                        cerr << "Unknown device_id: " << device_id << endl;
+                                    }
+
+                                    outstation->Apply(builder.Build());
+                                }
+                            }
+                        } catch (exception& e) {
+                            cerr << "Sensor connection failed: " << e.what() << endl;
+                        }
+                    }).detach();
+                }
+                do_accept(); // Continue accepting
+            });
+        };
+
+        do_accept();
+        io.run();
+    }).detach();
 }
 
-void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
+int main()
 {
-    try {
-        boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
-        std::cout << "[INFO] Listening on port 20001 for device data..." << std::endl;
+    const uint16_t port = 20000;
+    const string listenAddr = "0.0.0.0";
 
-        while (true)
-        {
-            tcp::socket socket(io_context);
-            acceptor.accept(socket);
+    const auto FILTERS = levels::NORMAL;
 
-            char buffer[1024];
-            size_t length = socket.read_some(boost::asio::buffer(buffer));
-            buffer[length] = '\0';
+    auto logger = ConsoleLogger::Create();
+    auto executor = IO::Create();
 
-            std::string data(buffer);
-            std::cout << "[RECEIVED] " << data << std::endl;
+    const uint16_t localAddr = 10;
+    const uint16_t remoteAddr = 1;
 
-            std::istringstream iss(data);
-            std::string deviceStr, tempStr, pressStr, humidStr, binaryStr;
+    // Outstation config with 6 analogs, 2 binaries
+    OutstationStackConfig config(DatabaseConfig::AllTypes(6, 2));
+    config.link.LocalAddr = localAddr;
+    config.link.RemoteAddr = remoteAddr;
 
-            if (std::getline(iss, deviceStr, ',') &&
-                std::getline(iss, tempStr, ',') &&
-                std::getline(iss, pressStr, ',') &&
-                std::getline(iss, humidStr, ',') &&
-                std::getline(iss, binaryStr, ','))
-            {
-                int deviceID = std::stoi(deviceStr);
-                float temperature = std::stof(tempStr);
-                float pressure = std::stof(pressStr);
-                float humidity = std::stof(humidStr);
-                bool binaryValue = (binaryStr == "1");
-
-                int analogBase = 0;
-                int binaryIndex = 0;
-
-                if (deviceID == 103)
-                {
-                    analogBase = 0;  // analog 0–2
-                    binaryIndex = 0; // binary 0
-                }
-                else if (deviceID == 104)
-                {
-                    analogBase = 3;  // analog 3–5
-                    binaryIndex = 1; // binary 1
-                }
-                else
-                {
-                    std::cerr << "[WARN] Unknown Device ID: " << deviceID << std::endl;
-                    continue;
-                }
-
-                UpdateBuilder builder;
-                builder.Update(Analog(temperature), analogBase);
-                builder.Update(Analog(pressure), analogBase + 1);
-                builder.Update(Analog(humidity), analogBase + 2);
-                builder.Update(Binary(binaryValue), binaryIndex);
-
-                outstation->Apply(builder.Build());
-
-                std::cout << "[APPLIED] Device=" << deviceID
-                          << " T=" << temperature
-                          << " P=" << pressure
-                          << " H=" << humidity
-                          << " Binary=" << binaryValue << std::endl;
-            }
-            else
-            {
-                std::cerr << "[ERROR] Invalid format: " << data << std::endl;
-            }
-
-            socket.close();
-        }
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "[ERROR] Exception: " << e.what() << std::endl;
-    }
-}
-
-int main(int argc, char* argv[])
-{
-    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
-    DNP3Manager manager(1, ConsoleLogger::Create());
-
-    auto channel = manager.AddTCPServer(
+    auto manager = DNP3Manager::Create();
+    auto channel = manager->AddTCPServer(
         "tcpserver",
         FILTERS,
         ChannelRetry::Default(),
-        "0.0.0.0",
-        20002,
+        listenAddr,
+        port,
         PrintingChannelListener::Create()
     );
 
-    OutstationStackConfig config;
-    config.dbConfig = DatabaseConfig(6, 0, 2, 0); // 6 analogs, 2 binaries
-    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = true;
-
-    // ✅ Link-layer addresses for SCADA polling
-    config.link.LocalAddr = 11; // RTU address
-    config.link.RemoteAddr = 2; // SCADA master address
-    config.link.KeepAliveTimeout = TimeDuration::Max();
-
-    ConfigureDatabase(config.dbConfig);
-
     auto outstation = channel->AddOutstation(
         "outstation",
-        SuccessCommandHandler::Create(),
-        DefaultOutstationApplication::Create(),
+        [&](IOutstation& outstation) {
+            return make_shared<DefaultOutstationApplication>();
+        },
+        [&](IOutstation& outstation) {
+            return make_shared<DefaultListenCallbacks>();
+        },
         config
     );
 
     outstation->Enable();
 
-    std::thread sensorThread(ReceiveSensorData, outstation);
-    sensorThread.join();
+    // Start sensor input listener
+    start_sensor_listener(outstation);
 
+    cout << "RTU 1 is running. Listening on port 20000 for SCADA, port 15000 for sensors." << endl;
+
+    // Keep main thread alive
+    this_thread::sleep_for(chrono::hours(24));
     return 0;
 }
