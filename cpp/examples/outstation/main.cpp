@@ -77,12 +77,12 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
                 int analogBase = 0;
                 int binaryIndex = 0;
 
-                if (deviceID == 101)
+                if (deviceID == 103)
                 {
                     analogBase = 0;  // analog 0–2
                     binaryIndex = 0; // binary 0
                 }
-                else if (deviceID == 102)
+                else if (deviceID == 104)
                 {
                     analogBase = 3;  // analog 3–5
                     binaryIndex = 1; // binary 1
