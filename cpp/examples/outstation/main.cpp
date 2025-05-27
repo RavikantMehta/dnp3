@@ -11,12 +11,12 @@
 #include <opendnp3/LogLevels.h>
 #include <opendnp3/outstation/IUpdateHandler.h>
 #include <opendnp3/outstation/SimpleCommandHandler.h>
+#include <opendnp3/outstation/OutstationStackConfig.h>
 
 #include <asiodnp3/DNP3Manager.h>
 #include <asiodnp3/ConsoleLogger.h>
 #include <asiodnp3/PrintingChannelListener.h>
 #include <asiodnp3/UpdateBuilder.h>
-#include <asiodnp3/OutstationStackConfig.h>
 
 using namespace std;
 using boost::asio::ip::tcp;
@@ -28,25 +28,23 @@ using namespace asiodnp3;
 // Configure 6 analogs (3 per device) and 2 binaries
 void ConfigureDatabase(DatabaseConfig& db)
 {
-    // 6 analog inputs (Class1, static+event variations)
     for (uint16_t i = 0; i < 6; ++i)
     {
-        db.analog[i].clazz           = PointClass::Class1;
-        db.analog[i].staticVariation = StaticAnalogVariation::Group30Var5;
-        db.analog[i].eventVariation  = EventAnalogVariation::Group32Var7;
+        db.analog[i].clazz      = PointClass::Class1;
+        db.analog[i].svariation = StaticAnalogVariation::Group30Var5;
+        db.analog[i].evariation = EventAnalogVariation::Group32Var7;
     }
-    // 2 binary inputs (Class1, static+event variations)
     for (uint16_t i = 0; i < 2; ++i)
     {
-        db.binary[i].clazz           = PointClass::Class1;
-        db.binary[i].staticVariation = StaticBinaryVariation::Group1Var2;
-        db.binary[i].eventVariation  = EventBinaryVariation::Group2Var2;
+        db.binary[i].clazz      = PointClass::Class1;
+        db.binary[i].svariation = StaticBinaryVariation::Group1Var2;
+        db.binary[i].evariation = EventBinaryVariation::Group2Var2;
     }
 }
 
 // Listen on TCP port 20001 for both devices:
 // payload: <deviceID>,<temp>,<press>,<humid>,<binary>
-void ReceiveSensorData(shared_ptr<IOutstation> outstation)
+void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
         boost::asio::io_context io;
@@ -130,7 +128,7 @@ int main()
         PrintingChannelListener::Create()
     );
 
-    // 2) Outstation config: use AllTypes(10) to cover 6 analog + 2 binary
+    // 2) Outstation config: 6 analogs, 2 binaries
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig       = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = false;    // Poll-only
@@ -156,6 +154,3 @@ int main()
     this_thread::sleep_for(chrono::hours(24));
     return 0;
 }
-
-
-
