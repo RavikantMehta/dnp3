@@ -1,137 +1,111 @@
-#include <opendnp3/outstation/IOutstation.h>
-#include <opendnp3/outstation/UpdateBuilder.h>
-#include <opendnp3/outstation/DatabaseConfig.h>
-#include <opendnp3/outstation/OutstationStackConfig.h>
-#include <opendnp3/outstation/DefaultOutstationApplication.h>
-#include <opendnp3/outstation/DefaultListenCallbacks.h>
+// main.cpp -- RTU1 for two devices on the same sensor port
 
-#include <opendnp3/logging/ConsoleLogger.h>
-#include <opendnp3/master/PrintingSOEHandler.h>
-#include <opendnp3/channel/DefaultChannelListener.h>
-#include <opendnp3/channel/TCPServer.h>
-
+#include <openpal/logging/ConsoleLogger.h>
 #include <asiopal/ASIOExecutor.h>
-#include <asiopal/IO.h>
 #include <asiopal/TCPServer.h>
-
-#include <openpal/logging/LogLevels.h>
-#include <openpal/util/ToHex.h>
-
-#include <chrono>
-#include <thread>
-#include <iostream>
-#include <sstream>
-#include <string>
-#include <memory>
+#include <dnp3/outstation_stack.h>
+#include <dnp3/log_levels.h>
 
 #include <boost/asio.hpp>
+#include <iostream>
+#include <thread>
+#include <sstream>
 
-using namespace std;
-using namespace opendnp3;
-using namespace openpal;
-using namespace asiopal;
-using namespace boost::asio;
+using namespace dnp3;
+using boost::asio::ip::tcp;
 
-void start_sensor_listener(shared_ptr<IOutstation> outstation)
+// --------------------------------------------------------------------------
+// Listens on TCP port 15000 for sensor lines:
+//   "<temp> <pressure> <humidity> <binary> <device_id>\n"
+// for BOTH devices, and updates the outstation accordingly.
+// --------------------------------------------------------------------------
+void startSensorListener(std::shared_ptr<OutstationStack> stack)
 {
-    thread([outstation]() {
-        io_context io;
-        ip::tcp::acceptor acceptor(io, ip::tcp::endpoint(ip::address::from_string("127.0.0.1"), 15000));
+    std::thread([stack]() {
+        asio::io_context io;
+        tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), 15000));
+        std::cout << "[RTU1] Sensor listener on port 15000\n";
 
-        function<void()> do_accept;
-        do_accept = [&]() {
-            acceptor.async_accept([&](boost::system::error_code ec, ip::tcp::socket socket) {
-                if (!ec) {
-                    thread([sock = move(socket), outstation]() mutable {
-                        try {
-                            while (true) {
-                                char buffer[1024];
-                                size_t len = sock.read_some(buffer::mutable_buffers_1(buffer, sizeof(buffer)));
-                                if (len > 0) {
-                                    string data(buffer, len);
-                                    istringstream iss(data);
-                                    int temp, pressure, humidity, binary, device_id;
-                                    iss >> temp >> pressure >> humidity >> binary >> device_id;
+        while (true) {
+            tcp::socket sock(io);
+            acceptor.accept(sock);
 
-                                    UpdateBuilder builder;
-                                    if (device_id == 101) {
-                                        builder.Update(Analog(temp, Flags(0x01)), 0);
-                                        builder.Update(Analog(pressure, Flags(0x01)), 1);
-                                        builder.Update(Analog(humidity, Flags(0x01)), 2);
-                                        builder.Update(Binary(binary != 0, Flags(0x01)), 0);
-                                    } else if (device_id == 102) {
-                                        builder.Update(Analog(temp, Flags(0x01)), 3);
-                                        builder.Update(Analog(pressure, Flags(0x01)), 4);
-                                        builder.Update(Analog(humidity, Flags(0x01)), 5);
-                                        builder.Update(Binary(binary != 0, Flags(0x01)), 1);
-                                    } else {
-                                        cerr << "Unknown device_id: " << device_id << endl;
-                                    }
+            std::thread([sock = std::move(sock), stack]() mutable {
+                try {
+                    while (true) {
+                        char buf[256];
+                        size_t n = sock.read_some(asio::buffer(buf));
+                        if (n == 0) break;
+                        std::istringstream iss(std::string(buf, n));
 
-                                    outstation->Apply(builder.Build());
-                                }
-                            }
-                        } catch (exception& e) {
-                            cerr << "Sensor connection failed: " << e.what() << endl;
+                        double temp, pressure, humidity;
+                        int binary, device;
+                        if (!(iss >> temp >> pressure >> humidity >> binary >> device)) {
+                            std::cerr << "[RTU1] Bad sensor format\n";
+                            break;
                         }
-                    }).detach();
-                }
-                do_accept(); // Continue accepting
-            });
-        };
 
-        do_accept();
-        io.run();
+                        // Build a new transaction
+                        auto tx = stack->StartTx();
+
+                        if (device == 101) {
+                            tx->UpdateAnalog(0, temp);
+                            tx->UpdateAnalog(1, pressure);
+                            tx->UpdateAnalog(2, humidity);
+                            tx->UpdateBinary(0, binary != 0);
+                        }
+                        else if (device == 102) {
+                            tx->UpdateAnalog(3, temp);
+                            tx->UpdateAnalog(4, pressure);
+                            tx->UpdateAnalog(5, humidity);
+                            tx->UpdateBinary(1, binary != 0);
+                        }
+                        else {
+                            std::cerr << "[RTU1] Unknown device: " << device << "\n";
+                        }
+
+                        tx->End();  // apply
+                    }
+                }
+                catch (const std::exception& e) {
+                    std::cerr << "[RTU1] Sensor connection error: " << e.what() << "\n";
+                }
+            }).detach();
+        }
     }).detach();
 }
 
+// --------------------------------------------------------------------------
+// Entry point: configure DNP3 outstation and launch sensor listener
+// --------------------------------------------------------------------------
 int main()
 {
-    const uint16_t port = 20000;
-    const string listenAddr = "0.0.0.0";
+    // 1) Prepare the logger & executor
+    auto logger   = openpal::ConsoleLogger::Create();
+    auto executor = asiopal::ASIOExecutor::Create();
 
-    const auto FILTERS = levels::NORMAL;
+    // 2) Build an outstation config for 6 analogs & 2 binaries
+    auto cfg = DefaultOutstationConfig();
+    cfg.link.LocalAddr = 10;   // RTU1 address
+    cfg.link.RemoteAddr = 1;   // SCADA (master) address
+    cfg.stack.num_analogs      = 6;
+    cfg.stack.num_binaries     = 2;
+    cfg.outstation.params.allowUnsolicited = false; // polling-only
 
-    auto logger = ConsoleLogger::Create();
-    auto executor = IO::Create();
-
-    const uint16_t localAddr = 10;
-    const uint16_t remoteAddr = 1;
-
-    // Outstation config with 6 analogs, 2 binaries
-    OutstationStackConfig config(DatabaseConfig::AllTypes(6, 2));
-    config.link.LocalAddr = localAddr;
-    config.link.RemoteAddr = remoteAddr;
-
-    auto manager = DNP3Manager::Create();
-    auto channel = manager->AddTCPServer(
-        "tcpserver",
-        FILTERS,
-        ChannelRetry::Default(),
-        listenAddr,
-        port,
-        PrintingChannelListener::Create()
+    // 3) Create & enable the outstation stack, listening on port 20000
+    auto stack = OutstationStack::Create(
+        executor, logger, cfg,
+        nullptr,           // no custom op handler
+        IPEndpoint("0.0.0.0", 20000),
+        LogLevels::NORMAL
     );
+    stack->Enable();
+    std::cout << "[RTU1] DNP3 outstation listening on port 20000\n";
 
-    auto outstation = channel->AddOutstation(
-        "outstation",
-        [&](IOutstation& outstation) {
-            return make_shared<DefaultOutstationApplication>();
-        },
-        [&](IOutstation& outstation) {
-            return make_shared<DefaultListenCallbacks>();
-        },
-        config
-    );
+    // 4) Start listening for sensor data (both devices) on port 15000
+    startSensorListener(stack);
 
-    outstation->Enable();
-
-    // Start sensor input listener
-    start_sensor_listener(outstation);
-
-    cout << "RTU 1 is running. Listening on port 20000 for SCADA, port 15000 for sensors." << endl;
-
-    // Keep main thread alive
-    this_thread::sleep_for(chrono::hours(24));
+    // 5) Keep running
+    std::this_thread::sleep_for(std::chrono::hours(24));
     return 0;
 }
