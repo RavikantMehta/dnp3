@@ -1,111 +1,156 @@
-// main.cpp -- RTU1 for two devices on the same sensor port
-
-#include <openpal/logging/ConsoleLogger.h>
-#include <asiopal/ASIOExecutor.h>
-#include <asiopal/TCPServer.h>
-#include <dnp3/outstation_stack.h>
-#include <dnp3/log_levels.h>
+#include <iostream>
+#include <sstream>
+#include <thread>
+#include <string>
 
 #include <boost/asio.hpp>
-#include <iostream>
-#include <thread>
-#include <sstream>
 
-using namespace dnp3;
+#include <openpal/logging/LogLevels.h>
+#include <asiopal/UTCTimeSource.h>
+
+#include <opendnp3/LogLevels.h>
+#include <opendnp3/outstation/IUpdateHandler.h>
+#include <opendnp3/outstation/SimpleCommandHandler.h>
+
+#include <asiodnp3/DNP3Manager.h>
+#include <asiodnp3/ConsoleLogger.h>
+#include <asiodnp3/PrintingChannelListener.h>
+#include <asiodnp3/UpdateBuilder.h>
+#include <asiodnp3/OutstationStackConfig.h>
+
+using namespace std;
 using boost::asio::ip::tcp;
+using namespace openpal;
+using namespace asiopal;
+using namespace opendnp3;
+using namespace asiodnp3;
 
-// --------------------------------------------------------------------------
-// Listens on TCP port 15000 for sensor lines:
-//   "<temp> <pressure> <humidity> <binary> <device_id>\n"
-// for BOTH devices, and updates the outstation accordingly.
-// --------------------------------------------------------------------------
-void startSensorListener(std::shared_ptr<OutstationStack> stack)
+// Configure 6 analogs (3 per device) and 2 binaries
+void ConfigureDatabase(DatabaseConfig& config)
 {
-    std::thread([stack]() {
-        asio::io_context io;
-        tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), 15000));
-        std::cout << "[RTU1] Sensor listener on port 15000\n";
+    for (int i = 0; i < 6; ++i)
+    {
+        config.analog[i].clazz       = PointClass::Class1;
+        config.analog[i].svariation  = StaticAnalogVariation::Group30Var5;
+        config.analog[i].evariation  = EventAnalogVariation::Group32Var7;
+    }
+    for (int i = 0; i < 2; ++i)
+    {
+        config.binary[i].clazz       = PointClass::Class1;
+    }
+}
 
-        while (true) {
+// Listen on 20001 for BOTH devices sending:
+//   <deviceID>,<temp>,<press>,<humid>,<binary>
+void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
+{
+    try {
+        asio::io_context io;
+        tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), 20001));
+        cout << "[RTU2] Listening sensor port 20001 for both devices\n";
+
+        while (true)
+        {
             tcp::socket sock(io);
             acceptor.accept(sock);
 
-            std::thread([sock = std::move(sock), stack]() mutable {
+            // Handle each connection in its own thread
+            thread([sock = std::move(sock), outstation]() mutable {
                 try {
-                    while (true) {
-                        char buf[256];
-                        size_t n = sock.read_some(asio::buffer(buf));
+                    char buf[1024];
+                    while (true)
+                    {
+                        size_t n = sock.read_some(boost::asio::buffer(buf));
                         if (n == 0) break;
-                        std::istringstream iss(std::string(buf, n));
+                        string data(buf, n);
+                        std::istringstream iss(data);
 
-                        double temp, pressure, humidity;
-                        int binary, device;
-                        if (!(iss >> temp >> pressure >> humidity >> binary >> device)) {
-                            std::cerr << "[RTU1] Bad sensor format\n";
-                            break;
-                        }
+                        string devStr, tStr, pStr, hStr, bStr;
+                        if (getline(iss, devStr, ',') &&
+                            getline(iss, tStr,   ',') &&
+                            getline(iss, pStr,   ',') &&
+                            getline(iss, hStr,   ',') &&
+                            getline(iss, bStr,   ','))
+                        {
+                            int    deviceID    = stoi(devStr);
+                            float  temp        = stof(tStr);
+                            float  press       = stof(pStr);
+                            float  humid       = stof(hStr);
+                            bool   binState    = (bStr == "1");
 
-                        // Build a new transaction
-                        auto tx = stack->StartTx();
+                            // Determine point indexes
+                            int analogBase = (deviceID == 101 ? 0 : 3);
+                            int binaryIdx  = (deviceID == 101 ? 0 : 1);
 
-                        if (device == 101) {
-                            tx->UpdateAnalog(0, temp);
-                            tx->UpdateAnalog(1, pressure);
-                            tx->UpdateAnalog(2, humidity);
-                            tx->UpdateBinary(0, binary != 0);
-                        }
-                        else if (device == 102) {
-                            tx->UpdateAnalog(3, temp);
-                            tx->UpdateAnalog(4, pressure);
-                            tx->UpdateAnalog(5, humidity);
-                            tx->UpdateBinary(1, binary != 0);
-                        }
-                        else {
-                            std::cerr << "[RTU1] Unknown device: " << device << "\n";
-                        }
+                            UpdateBuilder builder;
+                            builder.Update(Analog(temp), analogBase);
+                            builder.Update(Analog(press), analogBase + 1);
+                            builder.Update(Analog(humid), analogBase + 2);
+                            builder.Update(Binary(binState), binaryIdx);
 
-                        tx->End();  // apply
+                            outstation->Apply(builder.Build());
+
+                            cout << "[RTU2] Dev=" << deviceID
+                                 << " T=" << temp
+                                 << " P=" << press
+                                 << " H=" << humid
+                                 << " B=" << binState << "\n";
+                        }
+                        else
+                        {
+                            cerr << "[RTU2] Invalid payload: " << data << "\n";
+                        }
                     }
                 }
-                catch (const std::exception& e) {
-                    std::cerr << "[RTU1] Sensor connection error: " << e.what() << "\n";
+                catch (const exception& e) {
+                    cerr << "[RTU2] Sensor thread error: " << e.what() << "\n";
                 }
             }).detach();
         }
-    }).detach();
+    }
+    catch (const exception& e) {
+        cerr << "[RTU2] ReceiveSensorData error: " << e.what() << "\n";
+    }
 }
 
-// --------------------------------------------------------------------------
-// Entry point: configure DNP3 outstation and launch sensor listener
-// --------------------------------------------------------------------------
 int main()
 {
-    // 1) Prepare the logger & executor
-    auto logger   = openpal::ConsoleLogger::Create();
-    auto executor = asiopal::ASIOExecutor::Create();
+    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
+    DNP3Manager manager(1, ConsoleLogger::Create());
 
-    // 2) Build an outstation config for 6 analogs & 2 binaries
-    auto cfg = DefaultOutstationConfig();
-    cfg.link.LocalAddr = 10;   // RTU1 address
-    cfg.link.RemoteAddr = 1;   // SCADA (master) address
-    cfg.stack.num_analogs      = 6;
-    cfg.stack.num_binaries     = 2;
-    cfg.outstation.params.allowUnsolicited = false; // polling-only
-
-    // 3) Create & enable the outstation stack, listening on port 20000
-    auto stack = OutstationStack::Create(
-        executor, logger, cfg,
-        nullptr,           // no custom op handler
-        IPEndpoint("0.0.0.0", 20000),
-        LogLevels::NORMAL
+    // 1) DNP3 TCP server for ScadaBR polls on port 20002
+    auto channel = manager.AddTCPServer(
+        "server",
+        FILTERS,
+        ChannelRetry::Default(),
+        "0.0.0.0",
+        20002,
+        PrintingChannelListener::Create()
     );
-    stack->Enable();
-    std::cout << "[RTU1] DNP3 outstation listening on port 20000\n";
 
-    // 4) Start listening for sensor data (both devices) on port 15000
-    startSensorListener(stack);
+    // 2) Outstation config: 6 analogs, 2 binaries
+    OutstationStackConfig config(DatabaseSizes(6, 0, 2, 0));
+    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
+    config.outstation.params.allowUnsolicited = true;
+    config.link.LocalAddr = 11;   // RTU2 address
+    config.link.RemoteAddr = 2;   // ScadaBR (master) address
+    config.link.KeepAliveTimeout = TimeDuration::Max();
 
-    // 5) Keep running
+    ConfigureDatabase(config.dbConfig);
+
+    auto outstation = channel->AddOutstation(
+        "outstation",
+        SuccessCommandHandler::Create(),
+        DefaultOutstationApplication::Create(),
+        config
+    );
+    outstation->Enable();
+
+    // 3) Start sensor listener for both devices
+    ReceiveSensorData(outstation);
+
+    // 4) Keep running
     std::this_thread::sleep_for(std::chrono::hours(24));
     return 0;
 }
+
