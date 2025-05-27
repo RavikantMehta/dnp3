@@ -34,15 +34,18 @@ struct State {
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    config.analog[0].clazz = PointClass::Class1;
-    config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[0].evariation = EventAnalogVariation::Group32Var7;
-    
-    config.analog[0].clazz = PointClass::Class1;
-    config.analog[1].clazz = PointClass::Class1;
-    config.analog[2].clazz = PointClass::Class1;
+    // Configure 6 analogs and 2 binaries
+    for (int i = 0; i < 6; ++i)
+    {
+        config.analog[i].clazz = PointClass::Class1;
+        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
+        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
+    }
 
-    config.binary[0].clazz = PointClass::Class1;
+    for (int i = 0; i < 2; ++i)
+    {
+        config.binary[i].clazz = PointClass::Class1;
+    }
 }
 
 void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
@@ -78,7 +81,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     try {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
-        std::cout << "[INFO] Listening for sensor data on port 20001...for RTU1" << std::endl;
+        std::cout << "[INFO] Listening for sensor data on port 20001...for RTU2" << std::endl;
 
         while (true)
         {
@@ -94,28 +97,53 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
             std::cout << "[DATA RECEIVED] " << data << std::endl;
 
             std::istringstream iss(data);
-            std::string tempStr, pressStr, humidStr, binaryStr;
+            std::string deviceStr, tempStr, pressStr, humidStr, binaryStr;
 
-            if (std::getline(iss, tempStr, ',') &&
+            if (std::getline(iss, deviceStr, ',') &&
+                std::getline(iss, tempStr, ',') &&
                 std::getline(iss, pressStr, ',') &&
                 std::getline(iss, humidStr, ',') &&
                 std::getline(iss, binaryStr, ','))
             {
+                int deviceID = std::stoi(deviceStr);
                 float temperature = std::stof(tempStr);
                 float pressure = std::stof(pressStr);
                 float humidity = std::stof(humidStr);
                 bool binaryValue = (binaryStr == "1");
 
+                int analogBase = 0;
+                int binaryIndex = 0;
+
+                if (deviceID == 101)
+                {
+                    analogBase = 0;  // T,P,H → 0,1,2
+                    binaryIndex = 0;
+                }
+                else if (deviceID == 102)
+                {
+                    analogBase = 3;  // T,P,H → 3,4,5
+                    binaryIndex = 1;
+                }
+                else
+                {
+                    std::cerr << "[WARN] Unknown device ID: " << deviceID << std::endl;
+                    continue;
+                }
+
                 UpdateBuilder builder;
-                builder.Update(Analog(temperature), 0);
-                builder.Update(Analog(pressure), 1);
-                builder.Update(Analog(humidity), 2);
-                builder.Update(Binary(binaryValue), 0);
+                builder.Update(Analog(temperature), analogBase);
+                builder.Update(Analog(pressure), analogBase + 1);
+                builder.Update(Analog(humidity), analogBase + 2);
+                builder.Update(Binary(binaryValue), binaryIndex);
+
                 outstation->Apply(builder.Build());
 
-                std::cout << "[INFO] Sent to outstation: T=" << temperature
-                          << ", P=" << pressure << ", H=" << humidity
-                          << ", Binary=" << binaryValue << std::endl;
+                std::cout << "[INFO] Sent to outstation: Device=" << deviceID
+                          << ", T=" << temperature
+                          << ", P=" << pressure
+                          << ", H=" << humidity
+                          << ", Binary=" << binaryValue
+                          << std::endl;
             }
             else
             {
@@ -165,7 +193,8 @@ int main(int argc, char* argv[])
         PrintingChannelListener::Create()
     );
 
-    OutstationStackConfig config(DatabaseSizes::AllTypes(10));
+    OutstationStackConfig config;
+    config.dbConfig = DatabaseConfig(6, 0, 2, 0); // 6 analogs, 2 binaries
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
     config.link.LocalAddr = 11;
