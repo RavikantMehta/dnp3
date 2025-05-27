@@ -26,17 +26,21 @@ using namespace opendnp3;
 using namespace asiodnp3;
 
 // Configure 6 analogs (3 per device) and 2 binaries
-void ConfigureDatabase(DatabaseConfig& config)
+void ConfigureDatabase(DatabaseConfig& db)
 {
-    for (int i = 0; i < 6; ++i)
+    // 6 analog inputs (Class1, static+event variations)
+    for (uint16_t i = 0; i < 6; ++i)
     {
-        config.analog[i].clazz      = PointClass::Class1;
-        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
-        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
+        db.analog[i].clazz           = PointClass::Class1;
+        db.analog[i].staticVariation = StaticAnalogVariation::Group30Var5;
+        db.analog[i].eventVariation  = EventAnalogVariation::Group32Var7;
     }
-    for (int i = 0; i < 2; ++i)
+    // 2 binary inputs (Class1, static+event variations)
+    for (uint16_t i = 0; i < 2; ++i)
     {
-        config.binary[i].clazz = PointClass::Class1;
+        db.binary[i].clazz           = PointClass::Class1;
+        db.binary[i].staticVariation = StaticBinaryVariation::Group1Var2;
+        db.binary[i].eventVariation  = EventBinaryVariation::Group2Var2;
     }
 }
 
@@ -71,11 +75,11 @@ void ReceiveSensorData(shared_ptr<IOutstation> outstation)
                             getline(iss, hs,  ',') &&
                             getline(iss, bs,  ','))
                         {
-                            int deviceID = stoi(dev);
-                            float temp   = stof(ts);
-                            float press  = stof(ps);
-                            float humid  = stof(hs);
-                            bool binary  = (bs == "1");
+                            int    deviceID = stoi(dev);
+                            float  temp     = stof(ts);
+                            float  press    = stof(ps);
+                            float  humid    = stof(hs);
+                            bool   binary   = (bs == "1");
 
                             int analogBase = (deviceID == 101) ? 0 : 3;
                             int binaryIdx  = (deviceID == 101) ? 0 : 1;
@@ -129,7 +133,7 @@ int main()
     // 2) Outstation config: use AllTypes(10) to cover 6 analog + 2 binary
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig       = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = true;
+    config.outstation.params.allowUnsolicited = false;    // Poll-only
     config.link.LocalAddr     = 11;   // RTU2 address
     config.link.RemoteAddr    = 2;    // ScadaBR master address
     config.link.KeepAliveTimeout = TimeDuration::Max();
@@ -148,9 +152,10 @@ int main()
     // 4) Start sensor listener for both device IDs
     ReceiveSensorData(outstation);
 
-    // 5) Keep alive
+    // 5) Keep running
     this_thread::sleep_for(chrono::hours(24));
     return 0;
 }
+
 
 
