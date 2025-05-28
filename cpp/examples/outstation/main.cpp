@@ -1,40 +1,43 @@
 #include <iostream>
 #include <sstream>
-#include <string>
 #include <thread>
+#include <string>
+#include <mutex>
+
 #include <boost/asio.hpp>
 
-#include <opendnp3/outstation/OutstationConfig.h>
-#include <opendnp3/outstation/IOutstation.h>
-#include <opendnp3/outstation/UpdateBuilder.h>
-#include <opendnp3/outstation/DatabaseConfig.h>
-#include <opendnp3/outstation/OutstationStackConfig.h>
-#include <opendnp3/logging/ConsoleLogger.h>
-#include <opendnp3/outstation/DefaultOutstationApplication.h>
-#include <opendnp3/outstation/DefaultOutstationEventBufferConfig.h>
-#include <opendnp3/outstation/OutstationContext.h>
-#include <opendnp3/channel/ChannelRetry.h>
-#include <asiodnp3/DefaultListenCallbacks.h>
-#include <asiodnp3/DNP3Manager.h>
-#include <asiodnp3/OutstationStackConfig.h>
+#include <openpal/logging/LogLevels.h>
+#include <asiopal/UTCTimeSource.h>
 
+#include <opendnp3/LogLevels.h>
+#include <opendnp3/outstation/IUpdateHandler.h>
+#include <opendnp3/outstation/SimpleCommandHandler.h>
+
+#include <asiodnp3/DNP3Manager.h>
+#include <asiodnp3/ConsoleLogger.h>
+#include <asiodnp3/PrintingChannelListener.h>
+#include <asiodnp3/UpdateBuilder.h>
+
+using namespace std;
+using namespace boost::asio::ip;
+using namespace openpal;
+using namespace asiopal;
 using namespace opendnp3;
 using namespace asiodnp3;
-using boost::asio::ip::tcp;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Device 101 (analog: 0,1,2; binary: 0)
-    config.analog[0].clazz = PointClass::Class1;
-    config.analog[1].clazz = PointClass::Class1;
-    config.analog[2].clazz = PointClass::Class1;
-    config.binary[0].clazz = PointClass::Class1;
+    for (int i = 0; i < 6; ++i)
+    {
+        config.analog[i].clazz = PointClass::Class1;
+        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
+        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
+    }
 
-    // Device 102 (analog: 3,4,5; binary: 1)
-    config.analog[3].clazz = PointClass::Class1;
-    config.analog[4].clazz = PointClass::Class1;
-    config.analog[5].clazz = PointClass::Class1;
-    config.binary[1].clazz = PointClass::Class1;
+    for (int i = 0; i < 2; ++i)
+    {
+        config.binary[i].clazz = PointClass::Class1;
+    }
 }
 
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
@@ -42,7 +45,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     try {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
-        std::cout << "[INFO] Listening for sensor data on port 20001...for RTU2" << std::endl;
+        std::cout << "[INFO] Listening for sensor data on port 20001 (RTU)" << std::endl;
 
         while (true)
         {
@@ -58,22 +61,32 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
             std::cout << "[DATA RECEIVED] " << data << std::endl;
 
             std::istringstream iss(data);
-            std::string devIdStr, tempStr, pressStr, humidStr, binaryStr;
+            std::string deviceStr, tempStr, pressStr, humidStr, binaryStr;
 
-            if (std::getline(iss, devIdStr, ',') &&
+            if (std::getline(iss, deviceStr, ',') &&
                 std::getline(iss, tempStr, ',') &&
                 std::getline(iss, pressStr, ',') &&
                 std::getline(iss, humidStr, ',') &&
                 std::getline(iss, binaryStr, ','))
             {
-                int device_id = std::stoi(devIdStr);
+                int device_id = std::stoi(deviceStr);
                 float temperature = std::stof(tempStr);
                 float pressure = std::stof(pressStr);
                 float humidity = std::stof(humidStr);
                 bool binaryValue = (binaryStr == "1");
 
-                int analogBaseIndex = (device_id == 101) ? 0 : 3;
-                int binaryIndex = (device_id == 101) ? 0 : 1;
+                int analogBaseIndex, binaryIndex;
+
+                if (device_id == 103) {
+                    analogBaseIndex = 0;
+                    binaryIndex = 0;
+                } else if (device_id == 104) {
+                    analogBaseIndex = 3;
+                    binaryIndex = 1;
+                } else {
+                    std::cerr << "[ERROR] Unknown device ID: " << device_id << std::endl;
+                    continue;
+                }
 
                 UpdateBuilder builder;
                 builder.Update(Analog(temperature), analogBaseIndex);
@@ -82,7 +95,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
                 builder.Update(Binary(binaryValue), binaryIndex);
                 outstation->Apply(builder.Build());
 
-                std::cout << "[INFO] Device " << device_id << ": T=" << temperature
+                std::cout << "[INFO] Device " << device_id << " | Sent to outstation: T=" << temperature
                           << ", P=" << pressure << ", H=" << humidity
                           << ", Binary=" << binaryValue << std::endl;
             }
@@ -100,26 +113,28 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     }
 }
 
-int main()
+int main(int argc, char* argv[])
 {
-    const uint32_t FILTERS = levels::NORMAL;
+    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
     DNP3Manager manager(1, ConsoleLogger::Create());
 
     auto channel = manager.AddTCPServer(
         "server",
         FILTERS,
-        ServerAcceptMode::CloseExisting,
-        IPEndpoint("0.0.0.0", 20002),
-        ChannelRetry::Default()
+        ChannelRetry::Default(),
+        "0.0.0.0",
+        20002,
+        PrintingChannelListener::Create()
     );
 
-    DatabaseConfig dbConfig(6, 0, 2, 0); // 6 analogs, 2 binary
-    ConfigureDatabase(dbConfig);
-
-    OutstationConfig config(dbConfig);
+    OutstationStackConfig config(DatabaseSizes::AllTypes(10));
+    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
+    config.outstation.params.allowUnsolicited = true;
     config.link.LocalAddr = 11;
     config.link.RemoteAddr = 2;
-    config.eventBufferConfig = DefaultOutstationEventBufferConfig();
+    config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
+
+    ConfigureDatabase(config.dbConfig);
 
     auto outstation = channel->AddOutstation(
         "outstation",
