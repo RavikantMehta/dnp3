@@ -1,7 +1,10 @@
+// main.cpp (updated for 2 devices and polling)
+
 #include <iostream>
 #include <sstream>
 #include <thread>
 #include <string>
+#include <mutex>
 
 #include <boost/asio.hpp>
 
@@ -11,7 +14,6 @@
 #include <opendnp3/LogLevels.h>
 #include <opendnp3/outstation/IUpdateHandler.h>
 #include <opendnp3/outstation/SimpleCommandHandler.h>
-#include <opendnp3/outstation/OutstationStackConfig.h>
 
 #include <asiodnp3/DNP3Manager.h>
 #include <asiodnp3/ConsoleLogger.h>
@@ -19,106 +21,104 @@
 #include <asiodnp3/UpdateBuilder.h>
 
 using namespace std;
-using boost::asio::ip::tcp;
+using namespace boost::asio::ip;
 using namespace openpal;
 using namespace asiopal;
 using namespace opendnp3;
 using namespace asiodnp3;
 
-// Configure 6 analogs (3 per device) and 2 binaries
-void ConfigureDatabase(DatabaseConfig& db)
+void ConfigureDatabase(DatabaseConfig& config)
 {
-    for (uint16_t i = 0; i < 6; ++i)
+    for (int i = 0; i < 6; ++i)
     {
-        db.analog[i].clazz      = PointClass::Class1;
-        db.analog[i].svariation = StaticAnalogVariation::Group30Var5;
-        db.analog[i].evariation = EventAnalogVariation::Group32Var7;
+        config.analog[i].clazz = PointClass::Class1;
+        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
+        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
     }
-    for (uint16_t i = 0; i < 2; ++i)
+
+    for (int i = 0; i < 2; ++i)
     {
-        db.binary[i].clazz      = PointClass::Class1;
-        db.binary[i].svariation = StaticBinaryVariation::Group1Var2;
-        db.binary[i].evariation = EventBinaryVariation::Group2Var2;
+        config.binary[i].clazz = PointClass::Class1;
+        config.binary[i].svariation = StaticBinaryVariation::Group1Var2;
+        config.binary[i].evariation = EventBinaryVariation::Group2Var2;
     }
 }
 
-// Listen on TCP port 20001 for both devices:
-// payload: <deviceID>,<temp>,<press>,<humid>,<binary>
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
-        boost::asio::io_context io;
-        tcp::acceptor acceptor(io, tcp::endpoint(tcp::v4(), 20001));
-        cout << "[RTU2] Listening on sensor port 20001\n";
+        boost::asio::io_context io_context;
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
+        std::cout << "[INFO] Listening for sensor data on port 20001... for RTU2" << std::endl;
 
         while (true)
         {
-            tcp::socket sock(io);
-            acceptor.accept(sock);
+            tcp::socket socket(io_context);
+            acceptor.accept(socket);
+            std::cout << "[INFO] Sensor connected." << std::endl;
 
-            thread([sock = move(sock), outstation]() mutable {
-                try {
-                    char buf[1024];
-                    while (true)
-                    {
-                        size_t n = sock.read_some(boost::asio::buffer(buf));
-                        if (n == 0) break;
-                        string data(buf, n);
-                        istringstream iss(data);
+            char buffer[1024];
+            size_t length = socket.read_some(boost::asio::buffer(buffer));
+            buffer[length] = '\0';
 
-                        string dev, ts, ps, hs, bs;
-                        if (getline(iss, dev, ',') &&
-                            getline(iss, ts,  ',') &&
-                            getline(iss, ps,  ',') &&
-                            getline(iss, hs,  ',') &&
-                            getline(iss, bs,  ','))
-                        {
-                            int    deviceID = stoi(dev);
-                            float  temp     = stof(ts);
-                            float  press    = stof(ps);
-                            float  humid    = stof(hs);
-                            bool   binary   = (bs == "1");
+            std::string data(buffer);
+            std::cout << "[DATA RECEIVED] " << data << std::endl;
 
-                            int analogBase = (deviceID == 101) ? 0 : 3;
-                            int binaryIdx  = (deviceID == 101) ? 0 : 1;
+            std::istringstream iss(data);
+            std::string idStr, tempStr, pressStr, humidStr, binaryStr;
 
-                            UpdateBuilder builder;
-                            builder.Update(Analog(temp),    analogBase);
-                            builder.Update(Analog(press),   analogBase + 1);
-                            builder.Update(Analog(humid),   analogBase + 2);
-                            builder.Update(Binary(binary), binaryIdx);
+            if (std::getline(iss, idStr, ',') &&
+                std::getline(iss, tempStr, ',') &&
+                std::getline(iss, pressStr, ',') &&
+                std::getline(iss, humidStr, ',') &&
+                std::getline(iss, binaryStr, ','))
+            {
+                int deviceId = std::stoi(idStr);
+                float temperature = std::stof(tempStr);
+                float pressure = std::stof(pressStr);
+                float humidity = std::stof(humidStr);
+                bool binaryValue = (binaryStr == "1");
 
-                            outstation->Apply(builder.Build());
+                UpdateBuilder builder;
 
-                            cout << "[RTU2] Dev=" << deviceID
-                                 << " T=" << temp
-                                 << " P=" << press
-                                 << " H=" << humid
-                                 << " B=" << binary << "\n";
-                        }
-                        else
-                        {
-                            cerr << "[RTU2] Bad payload: " << data << "\n";
-                        }
-                    }
+                if (deviceId == 103) {
+                    builder.Update(Analog(temperature), 0);
+                    builder.Update(Analog(pressure), 1);
+                    builder.Update(Analog(humidity), 2);
+                    builder.Update(Binary(binaryValue), 0);
                 }
-                catch (const exception& e) {
-                    cerr << "[RTU2] Sensor thread error: " << e.what() << "\n";
+                else if (deviceId == 104) {
+                    builder.Update(Analog(temperature), 3);
+                    builder.Update(Analog(pressure), 4);
+                    builder.Update(Analog(humidity), 5);
+                    builder.Update(Binary(binaryValue), 1);
                 }
-            }).detach();
+                else {
+                    std::cerr << "[WARN] Unknown Device ID: " << deviceId << std::endl;
+                }
+
+                outstation->Apply(builder.Build());
+
+                std::cout << "[INFO] Applied updates for device " << deviceId << std::endl;
+            }
+            else {
+                std::cerr << "[ERROR] Invalid format: " << data << std::endl;
+            }
+
+            socket.close();
         }
     }
-    catch (const exception& e) {
-        cerr << "[RTU2] Listener error: " << e.what() << "\n";
+    catch (const std::exception& e)
+    {
+        std::cerr << "[ERROR] Exception in ReceiveSensorData: " << e.what() << std::endl;
     }
 }
 
-int main()
+int main(int argc, char* argv[])
 {
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
     DNP3Manager manager(1, ConsoleLogger::Create());
 
-    // 1) DNP3 TCP server on port 20002
     auto channel = manager.AddTCPServer(
         "server",
         FILTERS,
@@ -128,29 +128,28 @@ int main()
         PrintingChannelListener::Create()
     );
 
-    // 2) Outstation config: 6 analogs, 2 binaries
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
-    config.outstation.eventBufferConfig       = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = false;    // Poll-only
-    config.link.LocalAddr     = 11;   // RTU2 address
-    config.link.RemoteAddr    = 2;    // ScadaBR master address
-    config.link.KeepAliveTimeout = TimeDuration::Max();
+    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
+    config.outstation.params.allowUnsolicited = true;
+    config.outstation.params.typesAllowedInClass0 = StaticTypeBitField::AllTypes();  // respond with all types
+    config.outstation.params.unsolClassMask = ClassField::None(); // no unsolicited updates
+    config.link.LocalAddr = 11;
+    config.link.RemoteAddr = 2;
+    config.link.KeepAliveTimeout = openpal::TimeDuration::Seconds(30); // Optional: keep link alive
 
     ConfigureDatabase(config.dbConfig);
 
-    // 3) Add and enable outstation
     auto outstation = channel->AddOutstation(
         "outstation",
         SuccessCommandHandler::Create(),
         DefaultOutstationApplication::Create(),
         config
     );
+
     outstation->Enable();
 
-    // 4) Start sensor listener for both device IDs
-    ReceiveSensorData(outstation);
+    std::thread sensorThread(ReceiveSensorData, outstation);
+    sensorThread.join();
 
-    // 5) Keep running
-    this_thread::sleep_for(chrono::hours(24));
     return 0;
 }
