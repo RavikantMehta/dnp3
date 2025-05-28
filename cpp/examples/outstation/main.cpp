@@ -129,13 +129,12 @@ int main(int argc, char* argv[])
     );
 
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
-    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = true;
-    config.outstation.params.typesAllowedInClass0 = StaticTypeBitField::AllTypes();  // respond with all types
-    config.outstation.params.unsolClassMask = ClassField::None(); // no unsolicited updates
-    config.link.LocalAddr = 11;
-    config.link.RemoteAddr = 2;
-    config.link.KeepAliveTimeout = openpal::TimeDuration::Seconds(30); // Optional: keep link alive
+    config.outstation.eventBufferConfig       = EventBufferConfig::AllTypes(10);
+    // Turn off unsolicited so ScadaBR’s polls drive everything:
+    config.outstation.params.allowUnsolicited = false;
+    config.link.LocalAddr     = 11;
+    config.link.RemoteAddr    = 2;
+    config.link.KeepAliveTimeout = TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
 
