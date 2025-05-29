@@ -37,7 +37,8 @@ void ConfigureDatabase(DatabaseConfig& config)
     config.analog[0].clazz = PointClass::Class1;
     config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
     config.analog[0].evariation = EventAnalogVariation::Group32Var7;
-
+    
+    config.analog[0].clazz = PointClass::Class1;
     config.analog[1].clazz = PointClass::Class1;
     config.analog[2].clazz = PointClass::Class1;
 
@@ -77,7 +78,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     try {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
-        std::cout << "[INFO] Listening for sensor data on port 15000... for RTU1" << std::endl;
+        std::cout << "[INFO] Listening for sensor data on port 15000...for RTU2" << std::endl;
 
         while (true)
         {
@@ -93,15 +94,13 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
             std::cout << "[DATA RECEIVED] " << data << std::endl;
 
             std::istringstream iss(data);
-            std::string idStr, tempStr, pressStr, humidStr, binaryStr;
+            std::string tempStr, pressStr, humidStr, binaryStr;
 
-            if (std::getline(iss, idStr, ',') &&
-                std::getline(iss, tempStr, ',') &&
+            if (std::getline(iss, tempStr, ',') &&
                 std::getline(iss, pressStr, ',') &&
                 std::getline(iss, humidStr, ',') &&
                 std::getline(iss, binaryStr, ','))
             {
-                int deviceId = std::stoi(idStr);
                 float temperature = std::stof(tempStr);
                 float pressure = std::stof(pressStr);
                 float humidity = std::stof(humidStr);
@@ -114,10 +113,8 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
                 builder.Update(Binary(binaryValue), 0);
                 outstation->Apply(builder.Build());
 
-                std::cout << "[INFO] Sent to outstation: ID=" << deviceId
-                          << ", T=" << temperature
-                          << ", P=" << pressure
-                          << ", H=" << humidity
+                std::cout << "[INFO] Sent to outstation: T=" << temperature
+                          << ", P=" << pressure << ", H=" << humidity
                           << ", Binary=" << binaryValue << std::endl;
             }
             else
@@ -193,4 +190,5 @@ int main(int argc, char* argv[])
     inputThread.join();
 
     return 0;
-}
+} 
+ 
