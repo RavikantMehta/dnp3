@@ -1,148 +1,146 @@
 #include <iostream>
+#include <sstream>
 #include <thread>
+#include <string>
 #include <mutex>
-#include <chrono>
-#include <boost/asio.hpp>
-#include <openpal/logging/LogLevels.h>
-#include <asiodnp3/DNP3Manager.h>
-#include <asiodnp3/DefaultListenCallbacks.h>
-#include <asiodnp3/UpdateBuilder.h>
-#include <opendnp3/outstation/DatabaseConfig.h>
-#include <opendnp3/outstation/IOutstation.h>
-#include <opendnp3/outstation/OutstationConfig.h>
-#include <opendnp3/outstation/OutstationStackConfig.h>
-#include <opendnp3/app/MeasurementTypes.h>
 
-using namespace boost::asio;
+#include <boost/asio.hpp>
+
+#include <openpal/logging/LogLevels.h>
+#include <asiopal/UTCTimeSource.h>
+
+#include <opendnp3/LogLevels.h>
+#include <opendnp3/outstation/IUpdateHandler.h>
+#include <opendnp3/outstation/SimpleCommandHandler.h>
+
+#include <asiodnp3/DNP3Manager.h>
+#include <asiodnp3/ConsoleLogger.h>
+#include <asiodnp3/PrintingChannelListener.h>
+#include <asiodnp3/UpdateBuilder.h>
+
 using namespace std;
+using namespace boost::asio::ip;
+using namespace openpal;
+using namespace asiopal;
 using namespace opendnp3;
 using namespace asiodnp3;
 
-std::mutex dataMutex;
-float temperature = 0.0, pressure = 0.0, humidity = 0.0;
-bool binaryValue = false;
+void ConfigureDatabase(DatabaseConfig& config)
+{
+    // Analog points: Temperature (0), Pressure (1), Humidity (2)
+    for (int i = 0; i < 3; ++i)
+    {
+        config.analog[i].clazz = PointClass::Class1;
+        config.analog[i].svariation = StaticAnalogVariation::Group30Var1;
+        config.analog[i].evariation = EventAnalogVariation::Group32Var1;
+    }
 
-void receiveSensorData() {
+    // Binary point for status
+    config.binary[0].clazz = PointClass::Class1;
+}
+
+void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
+{
     try {
-        io_context io_context;
-        ip::tcp::acceptor acceptor(io_context, ip::tcp::endpoint(ip::tcp::v4(), 15000));
+        boost::asio::io_context io_context;
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
+        std::cout << "[INFO] Listening for sensor data on port 15000... (RTU2)" << std::endl;
 
-        while (true) {
-            ip::tcp::socket socket(io_context);
+        while (true)
+        {
+            tcp::socket socket(io_context);
             acceptor.accept(socket);
+            std::cout << "[INFO] Sensor connected." << std::endl;
 
-            boost::asio::streambuf buffer;
-            boost::asio::read_until(socket, buffer, "\n");
+            char buffer[1024];
+            size_t length = socket.read_some(boost::asio::buffer(buffer));
+            buffer[length] = '\0';
 
-            istream input(&buffer);
-            float temp, press, hum;
-            int bin;
-            input >> temp >> press >> hum >> bin;
+            std::string data(buffer);
+            std::cout << "[DATA RECEIVED] " << data << std::endl;
 
+            std::istringstream iss(data);
+            std::string idStr, tempStr, pressStr, humidStr, binaryStr;
+
+            if (std::getline(iss, idStr, ',') &&
+                std::getline(iss, tempStr, ',') &&
+                std::getline(iss, pressStr, ',') &&
+                std::getline(iss, humidStr, ',') &&
+                std::getline(iss, binaryStr, ','))
             {
-                std::lock_guard<std::mutex> lock(dataMutex);
-                temperature = temp;
-                pressure = press;
-                humidity = hum;
-                binaryValue = static_cast<bool>(bin);
+                int deviceId = std::stoi(idStr);
+                float temperature = std::stof(tempStr);
+                float pressure = std::stof(pressStr);
+                float humidity = std::stof(humidStr);
+                bool binaryValue = (binaryStr == "1");
+
+                auto now = asiopal::UTCTimeSource::Instance().Now();
+
+                UpdateBuilder builder;
+                builder.Update(Analog(temperature, now), 0); // Index 0 with timestamp
+                builder.Update(Analog(pressure, now), 1);    // Index 1 with timestamp
+                builder.Update(Analog(humidity, now), 2);    // Index 2 with timestamp
+                builder.Update(Binary(binaryValue, now), 0); // Binary index 0 with timestamp
+
+                outstation->Apply(builder.Build());
+
+                std::cout << "[INFO] Applied to outstation: ID=" << deviceId
+                          << ", T=" << temperature
+                          << ", P=" << pressure
+                          << ", H=" << humidity
+                          << ", Binary=" << binaryValue << std::endl;
+            }
+            else
+            {
+                std::cerr << "[ERROR] Invalid sensor data format: " << data << std::endl;
             }
 
             socket.close();
         }
-    } catch (std::exception& e) {
-        cerr << "TCP Receive Error: " << e.what() << endl;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "[ERROR] Exception in ReceiveSensorData: " << e.what() << std::endl;
     }
 }
 
-void updateOutstation(std::shared_ptr<IOutstation> outstation) {
-    float lastTemp = -9999, lastPress = -9999, lastHum = -9999;
-    bool lastBinary = false;
+int main(int argc, char* argv[])
+{
+    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
+    DNP3Manager manager(1, ConsoleLogger::Create());
 
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-
-        float temp, press, hum;
-        bool bin;
-
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            temp = temperature;
-            press = pressure;
-            hum = humidity;
-            bin = binaryValue;
-        }
-
-        UpdateBuilder builder;
-        bool changed = false;
-
-        if (temp != lastTemp) {
-            builder.Update(Analog(temp, Flags(0x01)), 0); // Temperature
-            lastTemp = temp;
-            changed = true;
-        }
-
-        if (press != lastPress) {
-            builder.Update(Analog(press, Flags(0x01)), 1); // Pressure
-            lastPress = press;
-            changed = true;
-        }
-
-        if (hum != lastHum) {
-            builder.Update(Analog(hum, Flags(0x01)), 2); // Humidity
-            lastHum = hum;
-            changed = true;
-        }
-
-        if (bin != lastBinary) {
-            builder.Update(Binary(bin, Flags(0x01)), 0); // Binary
-            lastBinary = bin;
-            changed = true;
-        }
-
-        if (changed) {
-            outstation->Apply(builder.Build());
-        }
-    }
-}
-
-int main() {
-    // Create DNP3 Manager
-    DNP3Manager manager(1, [](const LogMessage& msg) {
-        std::cout << msg.loggerid << " - " << msg.message << std::endl;
-    });
-
-    // Configure outstation
+    // Channel listens on port 20000
     auto channel = manager.AddTCPServer(
-        "server",
-        LogLevels::NORMAL,
-        ServerAcceptMode::CloseNew,
-        IPEndpoint("0.0.0.0", 20000),
-        nullptr
+        "rtu2_server",
+        FILTERS,
+        ChannelRetry::Default(),
+        "0.0.0.0",
+        20000,
+        PrintingChannelListener::Create()
     );
 
-    // Database config: 3 analogs, 1 binary
-    DatabaseConfig db;
-    db.analogs.resize(3);
-    db.binaries.resize(1);
-
-    OutstationStackConfig config(db);
-    config.outstation.params.allowUnsolicited = false;
+    OutstationStackConfig config(DatabaseSizes::AllTypes(10));
+    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
+    config.outstation.params.allowUnsolicited = true;  // Enable unsolicited responses
     config.link.LocalAddr = 10;  // RTU2 address
     config.link.RemoteAddr = 1;  // SCADA address
+    config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
+
+    ConfigureDatabase(config.dbConfig);
 
     auto outstation = channel->AddOutstation(
         "outstation",
-        [](IOutstation& outstation) {},
+        SuccessCommandHandler::Create(),
+        DefaultOutstationApplication::Create(),
         config
     );
 
     outstation->Enable();
 
-    std::thread tcpThread(receiveSensorData);
-    std::thread updateThread(updateOutstation, outstation);
+    // Start the sensor listener thread
+    std::thread sensorThread(ReceiveSensorData, outstation);
 
-    tcpThread.join();
-    updateThread.join();
+    sensorThread.join();
 
     return 0;
 }
