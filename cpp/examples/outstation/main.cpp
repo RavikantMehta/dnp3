@@ -3,11 +3,7 @@
 #include <thread>
 #include <string>
 #include <mutex>
-
-// Boost.Asio for TCP
 #include <boost/asio.hpp>
-
-// OpenDNP3 Core Includes
 #include <openpal/logging/LogLevels.h>
 #include <asiopal/UTCTimeSource.h>
 #include <opendnp3/LogLevels.h>
@@ -25,29 +21,27 @@ using namespace asiopal;
 using namespace opendnp3;
 using namespace asiodnp3;
 
-// ---- Configuration ---- //
-
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Device 101 → Analog 0,1,2 ; Device 102 → Analog 3,4,5
+    // Analog Inputs for Device 101 (0-2), Device 102 (3-5)
     for (int i = 0; i < 6; ++i)
     {
         config.analog[i].clazz = PointClass::Class1;
         config.analog[i].svariation = StaticAnalogVariation::Group30Var1;
         config.analog[i].evariation = EventAnalogVariation::Group32Var1;
     }
-    // Binary input 0 (shared by all devices)
-    config.binary[0].clazz = PointClass::Class1;
-}
 
-// ---- TCP Sensor Listener ---- //
+    // Binary Inputs: 0 for Device 101, 1 for Device 102
+    config.binary[0].clazz = PointClass::Class1;
+    config.binary[1].clazz = PointClass::Class1;
+}
 
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
-        std::cout << "[INFO] Listening for sensor data on port 15000..." << std::endl;
+        std::cout << "[INFO] Listening for sensor data on port 15000...for rtu1" << std::endl;
 
         while (true)
         {
@@ -79,27 +73,25 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 
                 UpdateBuilder builder;
 
-                // Device to analog index mapping
                 if (deviceId == 101)
                 {
                     builder.Update(Analog(temperature), 0);
                     builder.Update(Analog(pressure), 1);
                     builder.Update(Analog(humidity), 2);
+                    builder.Update(Binary(binaryValue), 0);
                 }
                 else if (deviceId == 102)
                 {
                     builder.Update(Analog(temperature), 3);
                     builder.Update(Analog(pressure), 4);
                     builder.Update(Analog(humidity), 5);
+                    builder.Update(Binary(binaryValue), 1);
                 }
                 else
                 {
                     std::cerr << "[WARNING] Unknown device ID: " << deviceId << std::endl;
                     continue;
                 }
-
-                // Binary input 0 is shared
-                builder.Update(Binary(binaryValue), 0);
 
                 outstation->Apply(builder.Build());
 
@@ -123,31 +115,25 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     }
 }
 
-// ---- Main Function ---- //
-
 int main(int argc, char* argv[])
 {
     const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
-
     DNP3Manager manager(1, ConsoleLogger::Create());
 
-    // Configure TCP server channel
     auto channel = manager.AddTCPServer(
         "rtu_server",
         FILTERS,
         ChannelRetry::Default(),
-        "0.0.0.0",     // Listen on all interfaces
-        20000,         // DNP3 TCP port
+        "0.0.0.0",
+        20000,
         PrintingChannelListener::Create()
     );
 
-    // Configure outstation
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
-
-    config.link.LocalAddr = 10;   // RTU address
-    config.link.RemoteAddr = 1;   // SCADA master
+    config.link.LocalAddr = 10;
+    config.link.RemoteAddr = 1;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
@@ -160,10 +146,7 @@ int main(int argc, char* argv[])
     );
 
     outstation->Enable();
-
-    // Start sensor data receiver thread
     std::thread sensorThread(ReceiveSensorData, outstation);
     sensorThread.join();
-
     return 0;
 }
