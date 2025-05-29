@@ -34,12 +34,12 @@ struct State {
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    config.analog[0].clazz = PointClass::Class1;
-    config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
-    config.analog[0].evariation = EventAnalogVariation::Group32Var7;
-
-    config.analog[1].clazz = PointClass::Class1;
-    config.analog[2].clazz = PointClass::Class1;
+    for (int i = 0; i < 3; ++i)
+    {
+        config.analog[i].clazz = PointClass::Class1;
+        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
+        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
+    }
 
     config.binary[0].clazz = PointClass::Class1;
 }
@@ -107,6 +107,11 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
                 float humidity = std::stof(humidStr);
                 bool binaryValue = (binaryStr == "1");
 
+                std::cout << "[DEBUG] Updating Analog(temperature)=" << temperature << " @0" << std::endl;
+                std::cout << "[DEBUG] Updating Analog(pressure)=" << pressure << " @1" << std::endl;
+                std::cout << "[DEBUG] Updating Analog(humidity)=" << humidity << " @2" << std::endl;
+                std::cout << "[DEBUG] Updating Binary=" << binaryValue << " @0" << std::endl;
+
                 UpdateBuilder builder;
                 builder.Update(Analog(temperature), 0);
                 builder.Update(Analog(pressure), 1);
@@ -156,7 +161,7 @@ void HandleUserInput(std::shared_ptr<IOutstation> outstation)
 
 int main(int argc, char* argv[])
 {
-    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
+    const uint32_t FILTERS = levels::ALL;  // Enable full logging
     DNP3Manager manager(1, ConsoleLogger::Create());
 
     auto channel = manager.AddTCPServer(
