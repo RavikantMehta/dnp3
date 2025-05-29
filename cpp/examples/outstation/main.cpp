@@ -25,18 +25,50 @@ using namespace asiopal;
 using namespace opendnp3;
 using namespace asiodnp3;
 
+struct State {
+    uint32_t count = 0;
+    double value = 0;
+    bool binary = false;
+    DoubleBit dbit = DoubleBit::DETERMINED_OFF;
+};
+
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    for (int i = 0; i < 6; ++i)
-    {
-        config.analog[i].clazz = PointClass::Class1;
-        config.analog[i].svariation = StaticAnalogVariation::Group30Var5;
-        config.analog[i].evariation = EventAnalogVariation::Group32Var7;
-    }
+    config.analog[0].clazz = PointClass::Class1;
+    config.analog[0].svariation = StaticAnalogVariation::Group30Var5;
+    config.analog[0].evariation = EventAnalogVariation::Group32Var7;
 
-    for (int i = 0; i < 2; ++i)
+    config.analog[1].clazz = PointClass::Class1;
+    config.analog[2].clazz = PointClass::Class1;
+
+    config.binary[0].clazz = PointClass::Class1;
+}
+
+void AddUpdates(UpdateBuilder& builder, State& state, const std::string& arguments)
+{
+    for (const char& c : arguments)
     {
-        config.binary[i].clazz = PointClass::Class1;
+        switch (c)
+        {
+            case 'c':
+                builder.Update(Counter(state.count), 0);
+                ++state.count;
+                break;
+            case 'a':
+                builder.Update(Analog(state.value), 0);
+                state.value += 1;
+                break;
+            case 'b':
+                builder.Update(Binary(state.binary), 0);
+                state.binary = !state.binary;
+                break;
+            case 'd':
+                builder.Update(DoubleBitBinary(state.dbit), 0);
+                state.dbit = (state.dbit == DoubleBit::DETERMINED_OFF) ? DoubleBit::DETERMINED_ON : DoubleBit::DETERMINED_OFF;
+                break;
+            default:
+                break;
+        }
     }
 }
 
@@ -45,7 +77,7 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     try {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
-        std::cout << "[INFO] Listening for sensor data on port 20001 (RTU)" << std::endl;
+        std::cout << "[INFO] Listening for sensor data on port 20001... for RTU2" << std::endl;
 
         while (true)
         {
@@ -61,42 +93,31 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
             std::cout << "[DATA RECEIVED] " << data << std::endl;
 
             std::istringstream iss(data);
-            std::string deviceStr, tempStr, pressStr, humidStr, binaryStr;
+            std::string idStr, tempStr, pressStr, humidStr, binaryStr;
 
-            if (std::getline(iss, deviceStr, ',') &&
+            if (std::getline(iss, idStr, ',') &&
                 std::getline(iss, tempStr, ',') &&
                 std::getline(iss, pressStr, ',') &&
                 std::getline(iss, humidStr, ',') &&
                 std::getline(iss, binaryStr, ','))
             {
-                int device_id = std::stoi(deviceStr);
+                int deviceId = std::stoi(idStr);
                 float temperature = std::stof(tempStr);
                 float pressure = std::stof(pressStr);
                 float humidity = std::stof(humidStr);
                 bool binaryValue = (binaryStr == "1");
 
-                int analogBaseIndex, binaryIndex;
-
-                if (device_id == 103) {
-                    analogBaseIndex = 0;
-                    binaryIndex = 0;
-                } else if (device_id == 104) {
-                    analogBaseIndex = 3;
-                    binaryIndex = 1;
-                } else {
-                    std::cerr << "[ERROR] Unknown device ID: " << device_id << std::endl;
-                    continue;
-                }
-
                 UpdateBuilder builder;
-                builder.Update(Analog(temperature), analogBaseIndex);
-                builder.Update(Analog(pressure), analogBaseIndex + 1);
-                builder.Update(Analog(humidity), analogBaseIndex + 2);
-                builder.Update(Binary(binaryValue), binaryIndex);
+                builder.Update(Analog(temperature), 0);
+                builder.Update(Analog(pressure), 1);
+                builder.Update(Analog(humidity), 2);
+                builder.Update(Binary(binaryValue), 0);
                 outstation->Apply(builder.Build());
 
-                std::cout << "[INFO] Device " << device_id << " | Sent to outstation: T=" << temperature
-                          << ", P=" << pressure << ", H=" << humidity
+                std::cout << "[INFO] Sent to outstation: ID=" << deviceId
+                          << ", T=" << temperature
+                          << ", P=" << pressure
+                          << ", H=" << humidity
                           << ", Binary=" << binaryValue << std::endl;
             }
             else
@@ -110,6 +131,26 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     catch (const std::exception& e)
     {
         std::cerr << "[ERROR] Exception in ReceiveSensorData: " << e.what() << std::endl;
+    }
+}
+
+void HandleUserInput(std::shared_ptr<IOutstation> outstation)
+{
+    string input;
+    State state;
+
+    while (true)
+    {
+        std::cout << "Enter one or more measurement changes then press <enter>" << std::endl;
+        std::cout << "c = counter, b = binary, d = doublebit, a = analog, 'quit' = exit" << std::endl;
+        std::cin >> input;
+
+        if (input == "quit")
+            exit(0);
+
+        UpdateBuilder builder;
+        AddUpdates(builder, state, input);
+        outstation->Apply(builder.Build());
     }
 }
 
@@ -146,7 +187,10 @@ int main(int argc, char* argv[])
     outstation->Enable();
 
     std::thread sensorThread(ReceiveSensorData, outstation);
+    std::thread inputThread(HandleUserInput, outstation);
+
     sensorThread.join();
+    inputThread.join();
 
     return 0;
 }
