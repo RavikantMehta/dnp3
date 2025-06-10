@@ -23,7 +23,7 @@ using namespace asiodnp3;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Analog Inputs for Device 101 (0-2), Device 102 (3-5)
+    // Analog Inputs for Device 103 (0-2), Device 104 (3-5)
     for (int i = 0; i < 6; ++i)
     {
         config.analog[i].clazz = PointClass::Class1;
@@ -31,7 +31,7 @@ void ConfigureDatabase(DatabaseConfig& config)
         config.analog[i].evariation = EventAnalogVariation::Group32Var1;
     }
 
-    // Binary Inputs: 0 for Device 101, 1 for Device 102
+    // Binary Inputs: 0 for Device 103, 1 for Device 104
     config.binary[0].clazz = PointClass::Class1;
     config.binary[1].clazz = PointClass::Class1;
 }
@@ -40,8 +40,8 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
         boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
-        std::cout << "[INFO] Listening for sensor data on port 15000...for rtu1" << std::endl;
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
+        std::cout << "[INFO] Listening for sensor data on port 20001...for rtu2" << std::endl;
 
         while (true)
         {
@@ -73,14 +73,14 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 
                 UpdateBuilder builder;
 
-                if (deviceId == 101)
+                if (deviceId == 103)
                 {
                     builder.Update(Analog(temperature), 0);
                     builder.Update(Analog(pressure), 1);
                     builder.Update(Analog(humidity), 2);
                     builder.Update(Binary(binaryValue), 0);
                 }
-                else if (deviceId == 102)
+                else if (deviceId == 104)
                 {
                     builder.Update(Analog(temperature), 3);
                     builder.Update(Analog(pressure), 4);
@@ -125,15 +125,15 @@ int main(int argc, char* argv[])
         FILTERS,
         ChannelRetry::Default(),
         "0.0.0.0",
-        20000,
+        20002,
         PrintingChannelListener::Create()
     );
 
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
     config.outstation.params.allowUnsolicited = true;
-    config.link.LocalAddr = 10;
-    config.link.RemoteAddr = 1;
+    config.link.LocalAddr = 11;
+    config.link.RemoteAddr = 2;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
 
     ConfigureDatabase(config.dbConfig);
