@@ -216,6 +216,20 @@ int main(int argc, char* argv[])
 
     outstation->Enable();
 
+    // 🔹 INITIAL NON-ZERO VALUES so master sees live data immediately
+    {
+        UpdateBuilder builder;
+        builder.Update(Analog(25.5), 0);   // temperature
+        builder.Update(Analog(60.2), 1);   // humidity
+        builder.Update(Analog(120.0), 2);  // power_usage
+        builder.Update(Analog(4500.0), 3); // energy_kwh
+        builder.Update(Binary(true), 0);   // door_open
+        builder.Update(Binary(false), 1);  // smoke_detected
+        builder.Update(Binary(true), 2);   // ups_status
+        outstation->Apply(builder.Build());
+        std::cout << "[INFO] Initialized outstation with non-zero values." << std::endl;
+    }
+
     std::thread sensorThread(ReceiveSensorData, outstation);
     std::thread inputThread(HandleUserInput, outstation);
 
