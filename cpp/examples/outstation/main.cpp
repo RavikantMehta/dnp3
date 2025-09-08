@@ -1,47 +1,26 @@
-#include <iostream>
-#include <sstream>
-#include <thread>
-#include <string>
-#include <mutex>
-#include <boost/asio.hpp>
-#include <openpal/logging/LogLevels.h>
-#include <asiopal/UTCTimeSource.h>
-#include <opendnp3/LogLevels.h>
-#include <opendnp3/outstation/IUpdateHandler.h>
-#include <opendnp3/outstation/SimpleCommandHandler.h>
-#include <asiodnp3/DNP3Manager.h>
-#include <asiodnp3/ConsoleLogger.h>
-#include <asiodnp3/PrintingChannelListener.h>
-#include <asiodnp3/UpdateBuilder.h>
-
-using namespace std;
-using namespace boost::asio::ip;
-using namespace openpal;
-using namespace asiopal;
-using namespace opendnp3;
-using namespace asiodnp3;
+#include <nlohmann/json.hpp> // JSON library
+using json = nlohmann::json;
 
 void ConfigureDatabase(DatabaseConfig& config)
 {
-    // Analog Inputs for Device 103 (0-2), Device 104 (3-5)
-    for (int i = 0; i < 6; ++i)
-    {
-        config.analog[i].clazz = PointClass::Class1;
-        config.analog[i].svariation = StaticAnalogVariation::Group30Var1;
-        config.analog[i].evariation = EventAnalogVariation::Group32Var1;
-    }
+    // Define analog points
+    config.analog[0].clazz = PointClass::Class1; // temperature
+    config.analog[1].clazz = PointClass::Class1; // humidity
+    config.analog[2].clazz = PointClass::Class1; // power_usage
+    config.analog[3].clazz = PointClass::Class1; // energy_kwh
 
-    // Binary Inputs: 0 for Device 103, 1 for Device 104
-    config.binary[0].clazz = PointClass::Class1;
-    config.binary[1].clazz = PointClass::Class1;
+    // Define binary points
+    config.binary[0].clazz = PointClass::Class1; // door_open
+    config.binary[1].clazz = PointClass::Class1; // smoke_detected
+    config.binary[2].clazz = PointClass::Class1; // ups_status
 }
 
 void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
 {
     try {
         boost::asio::io_context io_context;
-        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 20001));
-        std::cout << "[INFO] Listening for sensor data on port 20001...for rtu2" << std::endl;
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 15000));
+        std::cout << "[INFO] Listening for sensor data on port 15000... for RTU#1" << std::endl;
 
         while (true)
         {
@@ -49,61 +28,47 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
             acceptor.accept(socket);
             std::cout << "[INFO] Sensor connected." << std::endl;
 
-            char buffer[1024];
+            char buffer[2048];
             size_t length = socket.read_some(boost::asio::buffer(buffer));
             buffer[length] = '\0';
 
             std::string data(buffer);
             std::cout << "[DATA RECEIVED] " << data << std::endl;
 
-            std::istringstream iss(data);
-            std::string idStr, tempStr, pressStr, humidStr, binaryStr;
+            try {
+                json j = json::parse(data);
 
-            if (std::getline(iss, idStr, ',') &&
-                std::getline(iss, tempStr, ',') &&
-                std::getline(iss, pressStr, ',') &&
-                std::getline(iss, humidStr, ',') &&
-                std::getline(iss, binaryStr, ','))
-            {
-                int deviceId = std::stoi(idStr);
-                float temperature = std::stof(tempStr);
-                float pressure = std::stof(pressStr);
-                float humidity = std::stof(humidStr);
-                bool binaryValue = (binaryStr == "1");
+                float temperature = j.value("temperature_c", 0.0);
+                float humidity = j.value("humidity_pct", 0.0);
+                float power_usage = j.value("power_usage_w", 0.0);
+                float energy = j.value("energy_kwh", 0.0);
+                bool door = j.value("door_open", false);
+                bool smoke = j.value("smoke_detected", false);
+                bool ups = j.value("ups_status", false);
 
                 UpdateBuilder builder;
-
-                if (deviceId == 103)
-                {
-                    builder.Update(Analog(temperature), 0);
-                    builder.Update(Analog(pressure), 1);
-                    builder.Update(Analog(humidity), 2);
-                    builder.Update(Binary(binaryValue), 0);
-                }
-                else if (deviceId == 104)
-                {
-                    builder.Update(Analog(temperature), 3);
-                    builder.Update(Analog(pressure), 4);
-                    builder.Update(Analog(humidity), 5);
-                    builder.Update(Binary(binaryValue), 1);
-                }
-                else
-                {
-                    std::cerr << "[WARNING] Unknown device ID: " << deviceId << std::endl;
-                    continue;
-                }
+                builder.Update(Analog(temperature), 0);
+                builder.Update(Analog(humidity), 1);
+                builder.Update(Analog(power_usage), 2);
+                builder.Update(Analog(energy), 3);
+                builder.Update(Binary(door), 0);
+                builder.Update(Binary(smoke), 1);
+                builder.Update(Binary(ups), 2);
 
                 outstation->Apply(builder.Build());
 
-                std::cout << "[INFO] Applied update: ID=" << deviceId
-                          << ", T=" << temperature
-                          << ", P=" << pressure
-                          << ", H=" << humidity
-                          << ", Binary=" << binaryValue << std::endl;
-            }
-            else
-            {
-                std::cerr << "[ERROR] Invalid sensor data format: " << data << std::endl;
+                std::cout << "[INFO] Sent to outstation: "
+                          << "Temp=" << temperature
+                          << ", Hum=" << humidity
+                          << ", Power=" << power_usage
+                          << ", Energy=" << energy
+                          << ", Door=" << door
+                          << ", Smoke=" << smoke
+                          << ", UPS=" << ups
+                          << std::endl;
+
+            } catch (std::exception& ex) {
+                std::cerr << "[ERROR] JSON parse failed: " << ex.what() << std::endl;
             }
 
             socket.close();
@@ -113,40 +78,4 @@ void ReceiveSensorData(std::shared_ptr<IOutstation> outstation)
     {
         std::cerr << "[ERROR] Exception in ReceiveSensorData: " << e.what() << std::endl;
     }
-}
-
-int main(int argc, char* argv[])
-{
-    const uint32_t FILTERS = levels::NORMAL | levels::ALL_COMMS;
-    DNP3Manager manager(1, ConsoleLogger::Create());
-
-    auto channel = manager.AddTCPServer(
-        "rtu_server",
-        FILTERS,
-        ChannelRetry::Default(),
-        "0.0.0.0",
-        20002,
-        PrintingChannelListener::Create()
-    );
-
-    OutstationStackConfig config(DatabaseSizes::AllTypes(10));
-    config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = true;
-    config.link.LocalAddr = 11;
-    config.link.RemoteAddr = 2;
-    config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
-
-    ConfigureDatabase(config.dbConfig);
-
-    auto outstation = channel->AddOutstation(
-        "outstation",
-        SuccessCommandHandler::Create(),
-        DefaultOutstationApplication::Create(),
-        config
-    );
-
-    outstation->Enable();
-    std::thread sensorThread(ReceiveSensorData, outstation);
-    sensorThread.join();
-    return 0;
 }
