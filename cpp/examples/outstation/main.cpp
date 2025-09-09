@@ -200,7 +200,7 @@ int main(int argc, char* argv[])
 
     OutstationStackConfig config(DatabaseSizes::AllTypes(10));
     config.outstation.eventBufferConfig = EventBufferConfig::AllTypes(10);
-    config.outstation.params.allowUnsolicited = true;
+    config.outstation.params.allowUnsolicited = false;
     config.link.LocalAddr = 10;
     config.link.RemoteAddr = 1;
     config.link.KeepAliveTimeout = openpal::TimeDuration::Max();
